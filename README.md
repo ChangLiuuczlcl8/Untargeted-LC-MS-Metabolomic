@@ -1,2 +1,2 @@
-# Untargeted_LC-MS
-Matching Untargeted LC-MS datasets
+# Untargeted-LC-MS-Metabolomic
+Molecular networking for the fusion of multiple untargeted LC-MS metabolomic datasets to power the understanding of diseases
