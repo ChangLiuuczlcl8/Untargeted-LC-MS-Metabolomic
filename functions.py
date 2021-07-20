@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 from scipy.interpolate import interp1d
-import seaborn as sns
 from sklearn import svm
 from sklearn.linear_model import LinearRegression
 import statsmodels.api as sm
@@ -58,8 +57,8 @@ def iso_match_all(var_info, data, d_mz, d_rt, d_corr):
 
 # plot isotope networks
 def plot_iso(iso_df):
-    g = igraph.Graph.DataFrame(iso_df['reference', 'target', 'correlation'], directed=False)
-    igraph.plot(g, './outfile/isotope_graph.png', vertex_size=3)
+    g = igraph.Graph.DataFrame(iso_df[['reference', 'target', 'correlation']], directed=False)
+    igraph.plot(g, 'isotope_graph.png', layout=g.layout("kk"), vertex_size=3)
 
 
 # get connected components dataframe
@@ -72,7 +71,9 @@ def connected_comp(iso_df):
 
 # classify the isotopic matches
 # also accept false double isotopes, such as +0, +0, +1, +2, record the false double isotope matches as -1
+# todo: check len(iso_df) == len(iso_type)
 def iso_classify(iso_df, w=1.003055):
+    # get connected component list of isotope match dataframe
     cc_list = connected_comp(iso_df)
     iso_class = []
     for i in range(len(cc_list)):
@@ -82,7 +83,7 @@ def iso_classify(iso_df, w=1.003055):
             if not mzrt.empty:
                 cc.append([j, mzrt.iloc[0, 0], mzrt.iloc[0, 1]])
             else:
-                mzrt = iso_df[['mz_ref', 'rt_ref']][iso_df['target'] == j]
+                mzrt = iso_df[['mz_tar', 'rt_tar']][iso_df['target'] == j]
                 cc.append([j, mzrt.iloc[0, 0], mzrt.iloc[0, 1]])
         cc.sort(key=lambda x: x[1])
         cc[0].append(0)
@@ -108,25 +109,25 @@ def iso_classify(iso_df, w=1.003055):
                 tars_match['mz_diff'] = np.abs(tars_match['mz_tar'] - tars_match['mz_ref'] - w)
                 tars_match = tars_match.sort_values(by=['mz_diff']).reset_index(drop=True)
                 if tars_match.iloc[0, 0] != iso_match[0][0]:
-                    iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[n][4], 0, -1])
+                    iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[0][4], 0, -1])
                     continue
                 if len(iso_class) >= 1:
                     tars = list(list(zip(*iso_class))[1])
                 else:
                     fi_r = iso_df['fi_tar'][iso_df['reference'] == iso_match[0][0]].iloc[0] / iso_df['fi_ref'][iso_df['reference'] == iso_match[0][0]].iloc[0]
-                    iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[n][4], fi_r, 0])
+                    iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[0][4], fi_r, 0])
                     continue
                 if iso_match[0][0] in tars:
                     pre_type = iso_class[tars.index(iso_match[0][0])][5]
                     if pre_type != -1:
                         fi_r = iso_df['fi_tar'][iso_df['reference'] == iso_match[0][0]].iloc[0]/iso_df['fi_ref'][iso_df['reference'] == iso_match[0][0]].iloc[0]
-                        iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[n][4], fi_r, pre_type+1])
+                        iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[0][4], fi_r, pre_type+1])
                     else:
-                        iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[n][4], 0, 0])
+                        iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[0][4], 0, 0])
                 else:
                     fi_r = iso_df['fi_tar'][iso_df['reference'] == iso_match[0][0]].iloc[0]/iso_df['fi_ref'][iso_df['reference'] == iso_match[0][0]].iloc[0]
-                    iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[n][4], fi_r, 0])
-    iso_type = pd.DataFrame(iso_class, columns=['reference', 'target', 'mz', 'rt', 'fi_ratio', 'iso_type'])
+                    iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[0][4], fi_r, 0])
+    iso_type = pd.DataFrame(iso_class, columns=['reference', 'target', 'mz_ref', 'rt_ref', 'fi_ratio', 'iso_type'])
     return iso_type
 
 
@@ -134,7 +135,7 @@ def iso_classify(iso_df, w=1.003055):
 def fit_rlm(iso_type):
     gradients = []
     for i in range(min(max(iso_type['iso_type'])+1, 3)):
-        mz = list(iso_type['mz'][iso_type['iso_type'] == i])
+        mz = list(iso_type['mz_ref'][iso_type['iso_type'] == i])
         fi_r = list(iso_type['fi_ratio'][iso_type['iso_type'] == i])
         if len(mz) > 1:
             model = sm.RLM(fi_r, mz, M=sm.robust.norms.HuberT()).fit()
@@ -149,7 +150,7 @@ def std_class(iso_type):
     gradients = fit_rlm(iso_type)
     std = []
     for i in range(min(max(iso_type['iso_type'])+1, 3)):
-        x = iso_type['mz'][iso_type['iso_type'] == i].to_numpy()
+        x = iso_type['mz_ref'][iso_type['iso_type'] == i].to_numpy()
         y = iso_type['fi_ratio'][iso_type['iso_type'] == i].to_numpy()
         if len(x) > 1:
             std.append(np.sqrt(np.mean(((y - x * gradients[i]) * (np.sqrt(1 + (gradients[i]) ** 2))) ** 2)))
@@ -177,8 +178,8 @@ def count_incorrect(iso_type, model='rlm'):
                 num_incorrect += 1
     elif model == 'svm':
         for i in range(min(max(iso_type['iso_type']), 2)):
-            x_1 = iso_type[['mz', 'fi_ratio']][iso_type['iso_type'] == i].to_numpy()
-            x_2 = iso_type[['mz', 'fi_ratio']][iso_type['iso_type'] == i + 1].to_numpy()
+            x_1 = iso_type[['mz_ref', 'fi_ratio']][iso_type['iso_type'] == i].to_numpy()
+            x_2 = iso_type[['mz_ref', 'fi_ratio']][iso_type['iso_type'] == i + 1].to_numpy()
             x = np.concatenate((x_1, x_2))
             y = np.array([i] * len(x_1) + [i + 1] * len(x_2))
             model = svm.LinearSVC(penalty='l2', fit_intercept=False, C=5, dual=False, class_weight='balanced')
@@ -197,20 +198,31 @@ def reassign_label(isotope_sub, model='rlm'):
     if model == 'rlm':
         gradients = fit_rlm(iso_type)
         std = std_class(iso_type)
-        for i in range(len(isotope_sub)):
+        if len(iso_type.index) > 1:
+            for i in range(len(iso_type)):
+                dis = []
+                x = iso_type.iloc[i, 2]
+                y = iso_type.iloc[i, 4]
+                label = iso_type.iloc[i, 5]
+                for j in range(min(max(iso_type['iso_type']) + 1, 3)):
+                    dis.append(np.abs((y - x * gradients[j]) * (np.sqrt(1 + (gradients[j]) ** 2))))
+                dis = [a / b for a, b in zip(dis, std)]
+                if dis.index(min(dis)) != label:
+                    iso_type.iloc[i, 5] = dis.index(min(dis))
+        else:
             dis = []
-            x = iso_type.iloc[i, 2]
-            y = iso_type.iloc[i, 4]
-            label = iso_type.iloc[i, 5]
+            x = iso_type.iloc[2]
+            y = iso_type.iloc[4]
+            label = iso_type.iloc[5]
             for j in range(min(max(iso_type['iso_type']) + 1, 3)):
                 dis.append(np.abs((y - x * gradients[j]) * (np.sqrt(1 + (gradients[j]) ** 2))))
             dis = [a / b for a, b in zip(dis, std)]
             if dis.index(min(dis)) != label:
-                iso_type.iloc[i, 5] = dis.index(min(dis))
+                iso_type.iloc[5] = dis.index(min(dis))
     elif model == 'svm':
         for i in range(min(max(iso_type['iso_type']), 2)):
-            x_1 = iso_type[['mz', 'fi_ratio']][iso_type['iso_type'] == i].to_numpy()
-            x_2 = iso_type[['mz', 'fi_ratio']][iso_type['iso_type'] == i + 1].to_numpy()
+            x_1 = iso_type[['mz_ref', 'fi_ratio']][iso_type['iso_type'] == i].to_numpy()
+            x_2 = iso_type[['mz_ref', 'fi_ratio']][iso_type['iso_type'] == i + 1].to_numpy()
             x = np.concatenate((x_1, x_2))
             y = np.array([i for j in range(len(x_1))] + [i + 1 for j in range(len(x_2))])
             model = svm.LinearSVC(penalty='l2', fit_intercept=False, C=5, dual=False, class_weight='balanced')
@@ -264,21 +276,21 @@ def iso_grid_pre(var_info, isotope_all, d_mz_list, d_rt_list, d_corr_list, model
 
 
 def plot_isomatch(isotope_all, model='rlm', title='all'):
-    iso_all_type = iso_classify(isotope_all)
-    for i in range(min(max(iso_all_type['iso_type']) + 1, 3)):
-        x = list(iso_all_type['mz'][iso_all_type['iso_type'] == i])
-        y = list(iso_all_type['fi_ratio'][iso_all_type['iso_type'] == i])
-        sns.scatterplot(x, y)
+    plt.figure(figsize=(8, 6))
+    for i in range(min(max(isotope_all['iso_type']) + 1, 3)):
+        x = list(isotope_all['mz_ref'][isotope_all['iso_type'] == i])
+        y = list(isotope_all['fi_ratio'][isotope_all['iso_type'] == i])
+        plt.scatter(x, y, s=3)
         if model == 'rlm':
-            gradients = fit_rlm(iso_all_type)
+            gradients = fit_rlm(isotope_all)
             plt.plot([0] + [x[-1]], [0] + [x[-1] * gradients[i]], 'r')
     plt.xlim([0, 1200])
     plt.ylim([0, 1])
-    plt.title(title + 'isotope matches')
+    plt.title(title + ' isotope matches')
     plt.xlabel('m/z')
     plt.ylabel('fi_ratio')
-    plt.savefig('./outfile/'+title+'_isotope_matches.png')
-    plt.show()
+    plt.savefig(title+'_isotope_matches.png')
+    plt.close()
 
 
 # select the best setting of thresholds using cost function
@@ -322,17 +334,17 @@ def iso_final(var_info, iso_reassign):
                        name_rt.str[1].str[:4]
     var = file[['MZRT_str', 'mzmed', 'rtmed', 'fimed']].copy(deep=True)
     var = var.sort_values(by=['mzmed'], ignore_index=True)
-    var['iso_type'] = 'Nan'
+    var = var.assign(iso_type='Nan')
     for i in range(len(iso_reassign)):
         id_r = np.where(var.iloc[:, 0] == iso_reassign.iloc[i, 0])[0][0]
         if var.iloc[id_r, 4] == 'Nan':
-            var.iloc[id_r, 4] = iso_reassign.iloc[i, 4]
+            var.iloc[id_r, 4] = iso_reassign.iloc[i, 5]
             id_t = np.where(var.iloc[:, 0] == iso_reassign.iloc[i, 1])[0][0]
-            var.iloc[id_t, 4] = iso_reassign.iloc[i, 4] + 1
-        elif var.iloc[id_r, 4] == iso_reassign.iloc[i, 4]:
+            var.iloc[id_t, 4] = iso_reassign.iloc[i, 5] + 1
+        elif var.iloc[id_r, 4] == iso_reassign.iloc[i, 5]:
             id_t = np.where(var.iloc[:, 0] == iso_reassign.iloc[i, 1])[0][0]
-            var.iloc[id_t, 4] = iso_reassign.iloc[i, 4] + 1
-    var['iso_type'][var['iso_type'] == 'Nan'] = 0
+            var.iloc[id_t, 4] = iso_reassign.iloc[i, 5] + 1
+    var.iloc[:, 4].replace('Nan', 0)
     return var
 
 
@@ -368,6 +380,7 @@ def add_match_all(var_info, data, add_info, isotope_type, settings):
                         mm_r = (np.ones((len(add_df))) / add_df['oligomerIndex'] * (mz_r * add_df['chargeFactor'] - add_df['massToSubtract'] + add_df['massToAdd'])).to_numpy()
                         mm_t = (np.ones((len(add_df))) / add_df['oligomerIndex'] * (mz_t * add_df['chargeFactor'] - add_df['massToSubtract'] + add_df['massToAdd'])).to_numpy()
                         matrix_diff = np.abs(np.tile(mm_r, (10, 1)) - np.tile(mm_t, (10, 1)).transpose())
+                        np.fill_diagonal(matrix_diff, 10)
                         x, y = np.nonzero(matrix_diff <= d_mz)
                         for k in range(len(x)):
                             add_list.append([var_sub.iloc[m, 0], add_df.iloc[y[k], 0], var_sub.iloc[n, 0], add_df.iloc[x[k], 0],
@@ -379,12 +392,12 @@ def add_match_all(var_info, data, add_info, isotope_type, settings):
 
 
 # select valid adduct matches and obtain the dataframe of all features with corresponding isotope and adduct type
-def add_final(isotope_type, add_df):
+def add_final(isotope_type, isotope_match, add_df):
     frequency = add_df['add_type'].value_counts()
     adduct_match_ = pd.DataFrame(columns=['reference', 'ref_add', 'target', 'tar_add', 'iso_type', 'add_type',
-                                         'mz_r', 'mz_t', 'rt_r', 'rt_t', 'correlation'])
-    adduct_match = pd.DataFrame(columns=['reference', 'ref_add', 'target', 'tar_add', 'iso_type', 'add_type',
                                           'mz_r', 'mz_t', 'rt_r', 'rt_t', 'correlation'])
+    adduct_match = pd.DataFrame(columns=['reference', 'ref_add', 'target', 'tar_add', 'iso_type', 'add_type',
+                                         'mz_r', 'mz_t', 'rt_r', 'rt_t', 'correlation'])
     isotope_type['add_type'] = 'Nan'
     ref = ''
     for i in range(len(add_df)):
@@ -392,7 +405,7 @@ def add_final(isotope_type, add_df):
             continue
         else:
             ref = add_df.iloc[i, 0]
-            connections = add_df[add_df['reference']==ref].reset_index(drop=True)
+            connections = add_df[add_df['reference'] == ref].reset_index(drop=True)
             if len(connections) == 1:
                 adduct_match_ = adduct_match_.append(connections)
             else:
@@ -422,7 +435,7 @@ def add_final(isotope_type, add_df):
         if adduct_match_.iloc[i, 1] == adduct_match_.iloc[i, 3]:
             continue
         # check if the ref in this match appear in previous tar
-        ref = adduct_match[adduct_match['target']==adduct_match_.iloc[i, 0]]
+        ref = adduct_match[adduct_match['target'] == adduct_match_.iloc[i, 0]]
         x = 0
         for j in range(len(ref)):
             if ref.iloc[j, 3] != adduct_match_.iloc[i, 1]:
@@ -430,7 +443,7 @@ def add_final(isotope_type, add_df):
                 break
         if x < 0:
             continue
-        reftar = adduct_match_[adduct_match_['target']==adduct_match_.iloc[i, 2]]
+        reftar = adduct_match_[adduct_match_['target'] == adduct_match_.iloc[i, 2]]
         y = 0
         for j in range(len(reftar)):
             if reftar.iloc[j, 3] != adduct_match_.iloc[i, 3]:
@@ -448,6 +461,29 @@ def add_final(isotope_type, add_df):
                     break
         if z == 0:
             adduct_match = adduct_match.append(adduct_match_.iloc[i])
+
+    add_network = connected_comp(adduct_match[['reference', 'target']])
+    for i in range(len(add_network)):
+        for j in range(len(add_network[i])):
+            for k in range(j+1, len(add_network[i])):
+                rt_j = float(list(add_network[i])[j].split('_')[1])
+                rt_k = float(list(add_network[i])[k].split('_')[1])
+                if round(rt_j - rt_k) == 0:
+                    # select among same adduct from the network
+                    if list(add_network[i])[j] in isotope_match[['reference', 'target']].values:
+                        adduct_false = list(add_network[i])[k]
+                        adduct_match = adduct_match[(adduct_match['reference'] != adduct_false) & (adduct_match['target'] != adduct_false)]
+                    elif list(add_network[i])[k] in isotope_match[['reference', 'target']].values:
+                        adduct_false = list(add_network[i])[j]
+                        adduct_match = adduct_match[(adduct_match['reference'] != adduct_false) & (adduct_match['target'] != adduct_false)]
+                    else:
+                        l = list(np.delete(np.array(list(add_network[i])), [j, k]))
+                        meanrt = np.mean([float(a.split('_')[1]) for a in l])
+                        if np.abs(meanrt - rt_j) < np.abs(meanrt - rt_k):
+                            adduct_false = list(add_network[i])[k]
+                            adduct_match = adduct_match[(adduct_match['reference'] != adduct_false) & (adduct_match['target'] != adduct_false)]
+    adduct_match = adduct_match.reset_index(drop=True)
+
     for i in range(len(adduct_match)):
         id_r = np.where(isotope_type.iloc[:, 0] == adduct_match.iloc[i, 0])[0][0]
         if isotope_type.iloc[id_r, 5] == 'Nan':
@@ -466,7 +502,7 @@ def plot_add(add_df):
         adduct_i = add_df[add_df['iso_type'] == i]
         g = igraph.Graph.DataFrame(adduct_i[['reference', 'target']], directed=True)
         g.es["label"] = list(adduct_i['add_type'])
-        igraph.plot(g, './outfile/adduct_graph_'+str(i)+'.png', bbox=((3.2-i)*1000, (3.2-i)*1000), vertex_size=5,
+        igraph.plot(g, 'adduct_graph_'+str(i)+'.png', bbox=((3.2-i)*1000, (3.2-i)*1000), vertex_size=5,
                     edge_arrow_size=1, edge_arrow_width=0.5, vertex_label_size=5)
 
 
@@ -499,13 +535,13 @@ def carbonchain_match(var_info, data, iso_add_type, d_mz, d_rt, d_corr=-1, chain
                                                          data_2[round(len(data_1) / 4):round(len(data_1) * 3 / 4)])
                         corr = max(corr_0, corr_1, corr_2, corr_3)
                         if corr >= d_corr:
-                            if var_sub.iloc[m, 5] == var_sub.iloc[n, 5] and var_sub.iloc[m, 5]!='Nan':
-                                c2h4_list_strict.append([var_sub.iloc[m, 0], var_sub.iloc[n, 0], var_sub.iloc[m, 1], var_sub.iloc[n, 1],
-                                                  var_sub.iloc[m, 2], var_sub.iloc[n, 2],
-                                                  corr, j, var_sub.iloc[m, 5]])
-                            if var_sub.iloc[m, 5] == 'Nan' or var_sub.iloc[n, 5]=='Nan' or var_sub.iloc[m, 5]==var_sub.iloc[n, 5]:
-                                c2h4_list.append([var_sub.iloc[m, 0], var_sub.iloc[n, 0], var_sub.iloc[m, 1], var_sub.iloc[n, 1],
-                                                  var_sub.iloc[m, 2], var_sub.iloc[n, 2],
+                            if var_sub.iloc[m, 5] == var_sub.iloc[n, 5] and var_sub.iloc[m, 5] != 'Nan':
+                                c2h4_list_strict.append([var_sub.iloc[m, 0], var_sub.iloc[n, 0], var_sub.iloc[m, 1],
+                                                         var_sub.iloc[n, 1], var_sub.iloc[m, 2], var_sub.iloc[n, 2],
+                                                         corr, j, var_sub.iloc[m, 5]])
+                            if var_sub.iloc[m, 5] == 'Nan' or var_sub.iloc[n, 5] == 'Nan' or var_sub.iloc[m, 5] == var_sub.iloc[n, 5]:
+                                c2h4_list.append([var_sub.iloc[m, 0], var_sub.iloc[n, 0], var_sub.iloc[m, 1],
+                                                  var_sub.iloc[n, 1], var_sub.iloc[m, 2], var_sub.iloc[n, 2],
                                                   corr, j, var_sub.iloc[m, 5], var_sub.iloc[n, 5]])
     c2h4_all = pd.DataFrame(c2h4_list, columns=['reference', 'target', 'mz_ref', 'mz_tar', 'rt_ref', 'rt_tar',
                                                 'correlation', 'iso_type', 'add_ref', 'add_tar'])
@@ -539,18 +575,19 @@ def carbonchain_tp(c2h4_all, model='lowess', frac=0.3, mad=3, plot=False):
         plt.ylabel('rt difference')
         plt.legend()
         plt.title('c2h4 match')
+        plt.close()
     return c2h4
 
 
 # match two datasets
 # find all possible feature matches
-def allfeature_match(iso_add_type_1, iso_add_type_2, d_mz=0.015, d_rt=0.1):
+def allfeature_match(iso_add_type_1, iso_add_type_2, d_mz=0.015, d_rt_l=0.1, d_rt_r=0.1):
     feature_list = []
     feature_list_strict = []
     for i in range(len(iso_add_type_1)):
         # set threshold
-        rt_min = iso_add_type_1.iloc[i, 2] - d_rt
-        rt_max = iso_add_type_1.iloc[i, 2] + d_rt
+        rt_min = iso_add_type_1.iloc[i, 2] - d_rt_l
+        rt_max = iso_add_type_1.iloc[i, 2] + d_rt_r
         mz_min = iso_add_type_1.iloc[i, 1] - d_mz
         mz_max = iso_add_type_1.iloc[i, 1] + d_mz
         for j in range(len(iso_add_type_2)):
@@ -561,10 +598,10 @@ def allfeature_match(iso_add_type_1, iso_add_type_2, d_mz=0.015, d_rt=0.1):
                     if iso_add_type_2.iloc[i, 4] == iso_add_type_2.iloc[j, 4]:
                         if iso_add_type_2.iloc[i, 5] == iso_add_type_2.iloc[j, 5] and iso_add_type_2.iloc[i, 5] != 'Nan':
                             feature_list_strict.append([iso_add_type_1.iloc[i, 0], iso_add_type_2.iloc[j, 0],
-                                                 iso_add_type_1.iloc[i, 1], iso_add_type_2.iloc[j, 1],
-                                                 iso_add_type_1.iloc[i, 2], iso_add_type_2.iloc[j, 2],
-                                                 iso_add_type_1.iloc[i, 3], iso_add_type_2.iloc[j, 3],
-                                                 iso_add_type_1.iloc[i, 4], iso_add_type_2.iloc[i, 5]])
+                                                        iso_add_type_1.iloc[i, 1], iso_add_type_2.iloc[j, 1],
+                                                        iso_add_type_1.iloc[i, 2], iso_add_type_2.iloc[j, 2],
+                                                        iso_add_type_1.iloc[i, 3], iso_add_type_2.iloc[j, 3],
+                                                        iso_add_type_1.iloc[i, 4], iso_add_type_2.iloc[i, 5]])
                         if iso_add_type_2.iloc[i, 5] == iso_add_type_2.iloc[j, 5] or iso_add_type_2.iloc[i, 5] == 'Nan' or iso_add_type_2.iloc[j, 5] == 'Nan':
                             add_type = iso_add_type_2.iloc[i, 5] if iso_add_type_2.iloc[i, 5] != 'Nan' else iso_add_type_2.iloc[j, 5]
                             feature_list.append([iso_add_type_1.iloc[i, 0], iso_add_type_2.iloc[j, 0],
@@ -578,6 +615,14 @@ def allfeature_match(iso_add_type_1, iso_add_type_2, d_mz=0.015, d_rt=0.1):
                                                       'fi_ref', 'fi_tar', 'iso_type', 'add_type'])
     feature_all_strict = pd.DataFrame(feature_list_strict, columns=['reference', 'target', 'mz_ref', 'mz_tar', 'rt_ref', 'rt_tar',
                                                                     'fi_ref', 'fi_tar', 'iso_type', 'add_type'])
+    if np.median(feature_all['fi_ref'] - feature_all['fi_tar'] >= 0) >= 0:
+        feature_all = feature_all[feature_all['fi_ref'] >= feature_all['fi_tar']]
+        feature_all_strict = feature_all_strict[feature_all_strict['fi_ref'] >= feature_all_strict['fi_tar']]
+    else:
+        feature_all = feature_all[feature_all['fi_ref'] <= feature_all['fi_tar']]
+        feature_all_strict = feature_all_strict[feature_all_strict['fi_ref'] <= feature_all_strict['fi_tar']]
+    feature_all = feature_all.reset_index(drop=True)
+    feature_all_strict = feature_all_strict.reset_index(drop=True)
     return feature_all, feature_all_strict
 
 
@@ -654,6 +699,11 @@ def network_connection(feature_all, nl_1, nl_2, d_rt, multi_match=False, least_m
     return network_match_df
 
 
+# todo: check network match from both directions
+def network_valid(network_match_1, network_match_2):
+    pass
+
+
 # select high probability feature matches from all feature matches using subnetwork connections
 def hpfeature_match(feature_all, network_list_1, network_list_2, network_match_df):
     feature_match = []
@@ -667,8 +717,8 @@ def hpfeature_match(feature_all, network_list_1, network_list_2, network_match_d
                 if refind[0] in tarind:
                     feature_match.append(feature_all.iloc[i].append(network_match_df.iloc[refind[0]]))
     feature_hp_df = pd.DataFrame(feature_match, columns=['reference', 'target', 'mz_ref', 'mz_tar', 'rt_ref', 'rt_tar',
-                                                            'fi_ref', 'fi_tar', 'iso_type', 'add_type', 'ref_net', 'tar_net',
-                                                            'n_match', 'n_node_1', 'n_node_2', 'mean_mz_diff'])
+                                                         'fi_ref', 'fi_tar', 'iso_type', 'add_type', 'ref_net', 'tar_net',
+                                                         'n_match', 'n_node_1', 'n_node_2', 'mean_mz_diff'])
     return feature_hp_df
 
 
@@ -716,11 +766,10 @@ def feature_match_regression(feature_all, feature_hp):
     feature_hp['fi_reg'] = f_fi(x_fi).tolist()
     x_all_fi = np.log10(feature_all['fi_ref'].values)
     feature_all['fi_reg'] = f_fi(x_all_fi).tolist()
-
     return feature_all, feature_hp
 
 
-# plot step 1 to 3 for rt, mz and fi
+# plot step 1 to 4 for rt, mz and fi
 def all_match_penal(feature_all, feature_hp, mad=5, w=None, plot=True):
     if w is None:
         w = [1, 1, 0]
@@ -869,10 +918,12 @@ def all_match_penal(feature_all, feature_hp, mad=5, w=None, plot=True):
 
         fig.tight_layout()
         fig.show()
-        plt.savefig('./outfig/workflow.png')
+        plt.savefig('workflow.png')
+        plt.close()
     return feature_all
 
 
+# use penalisation score to reduce multiple matches
 def reduce_multimatch_ps(feature_all):
     feature_single = pd.DataFrame(columns=list(feature_all.columns))
     feature_single_ = pd.DataFrame(columns=list(feature_all.columns))
@@ -881,17 +932,24 @@ def reduce_multimatch_ps(feature_all):
             mm = feature_all[feature_all['reference'] == feature_all.iloc[i, 0]]
             feature_single_ = feature_single_.append(mm.iloc[mm['penalisation'].argmin()])
     for j in range(len(feature_single_)):
-        if feature_all.iloc[j, 1] not in list(feature_single['target']):
-            mm = feature_all[feature_all['target'] == feature_all.iloc[j, 1]]
+        if feature_single_.iloc[j, 1] not in list(feature_single['target']):
+            mm = feature_single_[feature_single_['target'] == feature_single_.iloc[j, 1]]
             feature_single = feature_single.append(mm.iloc[mm['penalisation'].argmin()])
-    return feature_single
+    return feature_single.reset_index(drop=True)
 
 
+# use validation score to reduce multiple matches
+def reduce_multimatch_vs(feature_all):
+    pass
+
+
+# use penalisation score to reduce poor matches
 def reduce_poormatch(feature_single, mad=5):
     feature_good = feature_single[feature_single['penalisation'] <= stats.median_abs_deviation(feature_single['penalisation']) * mad]
-    return feature_good
+    return feature_good.reset_index(drop=True)
 
 
+# plot multiple matches, poor matches and good matches
 def plot_goodmatch(feature_all, feature_single, feature_good):
     x_all_rt = feature_all['rt_ref'].values
     y_all_rt = (feature_all['rt_tar'] - feature_all['rt_ref']).values
@@ -940,4 +998,94 @@ def plot_goodmatch(feature_all, feature_single, feature_good):
 
     fig.tight_layout()
     fig.show()
-    plt.savefig('./outfig/good_match.png')
+    plt.savefig('good_match.png')
+    plt.close()
+
+
+# evaluate good matches
+# if corr >= 1, it is the number of highly correlated features,
+# else (corr < 1), it is the correlation threshold to select features
+def fmatch_eval(var_info_1, var_info_2, data_1, data_2, feature_good, d_rt=1/60, corr=20):
+    var_df_1 = pd.read_excel(var_info_1, engine='openpyxl')
+    var_df_2 = pd.read_excel(var_info_2, engine='openpyxl')
+    if data_1[-3:] == 'csv':
+        data_pd_1 = pd.read_csv(data_1, header=None)
+    else:
+        data_pd_1 = pd.read_excel(data_1, header=None)
+    if data_2[-3:] == 'csv':
+        data_pd_2 = pd.read_csv(data_2, header=None)
+    else:
+        data_pd_2 = pd.read_excel(data_2, header=None)
+    match = []
+    size_1 = []
+    size_2 = []
+    if 'MZRT_str' not in var_df_1.columns:
+        name_mz = var_df_1['mzmed'].astype(str).str.split(".")
+        name_rt = var_df_1['rtmed'].astype(str).str.split(".")
+        var_df_1['MZRT_str'] = 'SLPOS_' + name_mz.str[0] + '.' + name_mz.str[1].str[:4] + '_' + name_rt.str[0] + '.' + name_rt.str[1].str[:4]
+    var_df_1 = var_df_1[['MZRT_str', 'mzmed', 'rtmed', 'fimed']]
+    var_ind_1 = var_df_1.sort_values(by=['mzmed']).index
+    if 'MZRT_str' not in var_df_2.columns:
+        name_mz = var_df_2['mzmed'].astype(str).str.split(".")
+        name_rt = var_df_2['rtmed'].astype(str).str.split(".")
+        var_df_2['MZRT_str'] = 'SLPOS_' + name_mz.str[0] + '.' + name_mz.str[1].str[:4] + '_' + name_rt.str[0] + '.' + name_rt.str[1].str[:4]
+    var_df_2 = var_df_2[['MZRT_str', 'mzmed', 'rtmed', 'fimed']]
+    var_ind_2 = var_df_2.sort_values(by=['mzmed']).index
+    for i in range(len(feature_good)):
+        rt_ref = feature_good.iloc[i, 4]
+        rt_tar = feature_good.iloc[i, 5]
+        ref_df = var_df_1[(rt_ref - d_rt <= var_df_1['rtmed']) & (var_df_1['rtmed'] <= rt_ref + d_rt)]
+        tar_df = var_df_2[(rt_tar - d_rt <= var_df_2['rtmed']) & (var_df_2['rtmed'] <= rt_tar + d_rt)]
+        ref_data = data_pd_1.T[(rt_ref - d_rt <= var_df_1['rtmed']) & (var_df_1['rtmed'] <= rt_ref + d_rt)]
+        tar_data = data_pd_2.T[(rt_tar - d_rt <= var_df_2['rtmed']) & (var_df_2['rtmed'] <= rt_tar + d_rt)]
+        ref_i = ref_data[ref_df.MZRT_str == feature_good.iloc[i, 0]]
+        tar_i = tar_data[tar_df.MZRT_str == feature_good.iloc[i, 1]]
+        ref_data = ref_data[ref_df.MZRT_str != feature_good.iloc[i, 0]]
+        tar_data = tar_data[tar_df.MZRT_str != feature_good.iloc[i, 1]]
+        ref_df = ref_df[ref_df.MZRT_str != feature_good.iloc[i, 0]]
+        tar_df = tar_df[tar_df.MZRT_str != feature_good.iloc[i, 1]]
+        ref_df = ref_df.assign(correlation=ref_data.corrwith(ref_i.iloc[0], axis=1))
+        tar_df = tar_df.assign(correlation=tar_data.corrwith(tar_i.iloc[0], axis=1))
+        ref_df = ref_df.sort_values(by=['correlation']).reset_index(drop=True)
+        tar_df = tar_df.sort_values(by=['correlation']).reset_index(drop=True)
+        if corr >= 1:
+            if len(ref_df) > corr:
+                ref_df = ref_df.iloc[:corr]
+            if len(tar_df) > corr:
+                tar_df = tar_df.iloc[:corr]
+        else:
+            ref_df = ref_df[ref_df['correlation'] >= corr].reset_index(drop=True)
+            tar_df = tar_df[tar_df['correlation'] >= corr].reset_index(drop=True)
+        n_match = 0
+        for j in range(len(ref_df)):
+            if ref_df.iloc[j, 0] in feature_good['reference'].values:
+                if sum(tar_df['MZRT_str'].isin(feature_good.iloc[feature_good.index[feature_good.iloc[:, 0] == ref_df.iloc[j, 0]], 1])) == 1:
+                    n_match += 1
+        match.append(n_match)
+        size_1.append(len(ref_df))
+        size_2.append(len(tar_df))
+    feature_good['match'] = match
+    feature_good['size_1'] = size_1
+    feature_good['size_2'] = size_2
+    return feature_good
+
+
+def plot_eval(feature_good):
+    for i in range(len(feature_good)):
+        plt.scatter(feature_good.iloc[i, -2] + 0.5 * np.random.rand(1),
+                    feature_good.iloc[i, -1] + 0.5 * np.random.rand(1), c='black', s=3)
+        plt.xticks(np.arange(0, 20, 5))
+    plt.savefig('eval.png')
+    plt.close()
+    for i in range(len(feature_good)):
+        plt.scatter(feature_good.iloc[i, -3] + 0.5 * np.random.rand(1),
+                    min(feature_good.iloc[i, -1], feature_good.iloc[i, -2]) + 0.5 * np.random.rand(1), c='black', s=3)
+        plt.xticks(np.arange(0, 20, 5))
+    plt.savefig('eval_min.png')
+    plt.close()
+    for i in range(len(feature_good)):
+        plt.scatter(feature_good.iloc[i, -3] + 0.5 * np.random.rand(1),
+                    max(feature_good.iloc[i, -1], feature_good.iloc[i, -2]) + 0.5 * np.random.rand(1), c='black', s=3)
+        plt.xticks(np.arange(0, 20, 5))
+    plt.savefig('eval_max.png')
+    plt.close()
