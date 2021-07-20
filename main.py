@@ -103,7 +103,7 @@ c2h4_hm = carbonchain_tp(c2h4_all_hm)
 # find all possible feature matches
 # input: isotope and adduct type of first dataset, isotope and adduct type of second dataset, mz threshold, rt threshold
 # output: all possible feature matches with the same or unknown adduct type, all possible feature matches with the same and known adduct type
-feature_all_am, feature_strict_am = allfeature_match(iso_add_type_ha, iso_add_type_hm, d_mz=0.015, d_rt=0.1)
+feature_all_am, feature_strict_am = allfeature_match(iso_add_type_ha, iso_add_type_hm, d_mz=0.015, d_rt_l=0.1, d_rt_r=0.1)
 
 # obtain feature matches for the other direction
 feature_all_ma = feature_all_am[['target', 'reference', 'mz_tar', 'mz_ref', 'rt_tar', 'rt_ref', 'fi_tar', 'fi_ref', 'iso_type', 'add_type']]
@@ -157,3 +157,6 @@ feature_good_am = reduce_poormatch(feature_single_am)
 
 # plot good, poor and multiple match
 plot_goodmatch(feature_all_am, feature_single_am, feature_good_am)
+
+# validate each match by calculating a score
+feature_good_12 = fmatch_eval(var_info_1, var_info_2, data_1, data_2, feature_good_12, d_rt=2/60, corr=0.6)
