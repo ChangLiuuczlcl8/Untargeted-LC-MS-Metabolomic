@@ -95,7 +95,7 @@ def iso_classify(iso_df, w=1.003055):
             cc_k_2 = cc_df[cc_df['iso_type'] == k+1].reset_index(drop=True)
             for a in range(len(cc_k_1)):
                 iso_match = []
-                for b in range(len(cc_k_2)):
+                for b in range(len(cc_k_2.index)):
                     if np.sum(np.logical_and(iso_df['reference'] == cc_k_1.iloc[a, 0], iso_df['target'] == cc_k_2.iloc[b, 0])) >= 1:
                         iso_match.append([cc_k_1.iloc[a, 0], cc_k_2.iloc[b, 0], cc_k_1.iloc[a, 1], np.abs(cc_k_1.iloc[a, 1]-cc_k_2.iloc[b, 1]-w), cc_k_1.iloc[a, 2], cc_k_1.iloc[a, 3]])
                 if len(iso_match) == 0:
@@ -152,12 +152,28 @@ def std_class(iso_type):
     for i in range(min(max(iso_type['iso_type'])+1, 3)):
         x = iso_type['mz_ref'][iso_type['iso_type'] == i].to_numpy()
         y = iso_type['fi_ratio'][iso_type['iso_type'] == i].to_numpy()
-        if len(x) > 1:
+        if x.shape[0] > 1:
             std.append(np.sqrt(np.mean(((y - x * gradients[i]) * (np.sqrt(1 + (gradients[i]) ** 2))) ** 2)))
         else:
             # if there is only one type +2 connection, set std of type +2  = std of type +1 / 2
             std.append(std[-1]/2)
     return std
+
+
+# get the gradient of svm hyperplanes
+def fit_svm(iso_type):
+    gradients = []
+    for i in range(min(max(iso_type['iso_type']), 2)):
+        x_1 = iso_type[['mz_ref', 'fi_ratio']][iso_type['iso_type'] == i].to_numpy()
+        x_1 = x_1.reshape((-1, x_1.shape[-1]))
+        x_2 = iso_type[['mz_ref', 'fi_ratio']][iso_type['iso_type'] == i + 1].to_numpy()
+        x_2 = x_2.reshape((-1, x_2.shape[-1]))
+        x = np.concatenate((x_1, x_2), axis=0)
+        y = np.array([0] * x_1.shape[0] + [1] * x_2.shape[0])
+        model = svm.LinearSVC(penalty='l2', fit_intercept=False, C=5, dual=False, class_weight='balanced')
+        model.fit(x, y)
+        gradients.append(-model.coef_[0][0]/model.coef_[0][1])
+    return gradients
 
 
 # calculate the number of incorrect labels with robust linear model or support vector machine
@@ -179,9 +195,11 @@ def count_incorrect(iso_type, model='rlm'):
     elif model == 'svm':
         for i in range(min(max(iso_type['iso_type']), 2)):
             x_1 = iso_type[['mz_ref', 'fi_ratio']][iso_type['iso_type'] == i].to_numpy()
+            x_1 = x_1.reshape((-1, x_1.shape[-1]))
             x_2 = iso_type[['mz_ref', 'fi_ratio']][iso_type['iso_type'] == i + 1].to_numpy()
-            x = np.concatenate((x_1, x_2))
-            y = np.array([i] * len(x_1) + [i + 1] * len(x_2))
+            x_2 = x_2.reshape((-1, x_2.shape[-1]))
+            x = np.concatenate((x_1, x_2), axis=0)
+            y = np.array([0] * x_1.shape[0] + [1] * x_2.shape[0])
             model = svm.LinearSVC(penalty='l2', fit_intercept=False, C=5, dual=False, class_weight='balanced')
             model.fit(x, y)
             pred = model.predict(x)
@@ -222,21 +240,23 @@ def reassign_label(isotope_sub, model='rlm'):
     elif model == 'svm':
         for i in range(min(max(iso_type['iso_type']), 2)):
             x_1 = iso_type[['mz_ref', 'fi_ratio']][iso_type['iso_type'] == i].to_numpy()
+            x_1 = x_1.reshape((-1, x_1.shape[-1]))
             x_2 = iso_type[['mz_ref', 'fi_ratio']][iso_type['iso_type'] == i + 1].to_numpy()
-            x = np.concatenate((x_1, x_2))
-            y = np.array([i for j in range(len(x_1))] + [i + 1 for j in range(len(x_2))])
+            x_2 = x_2.reshape((-1, x_2.shape[-1]))
+            x = np.concatenate((x_1, x_2), axis=0)
+            y = np.array([i for j in range(x_1.shape[0])] + [i + 1 for j in range(x_2.shape[0])])
             model = svm.LinearSVC(penalty='l2', fit_intercept=False, C=5, dual=False, class_weight='balanced')
             model.fit(x, y)
             pred = model.predict(x)
-            iso_type['iso_type'][iso_type['iso_type'] == i] = pred[:len(x_1)]
-            iso_type['iso_type'][iso_type['iso_type'] == i + 1] = pred[len(x_1):]
+            iso_type.loc[iso_type.iso_type == i, 'iso_type'] = pred[:x_1.shape[0]]
+            iso_type.loc[iso_type.iso_type == i + 1, 'iso_type'] = pred[x_1.shape[0]:]
     else:
         raise Exception("model name: 'rlm' or 'svm'")
     return iso_type
 
 
 # calculate the incorrect number and total number of isotopic matches with different thresholds
-def iso_grid_pre(var_info, isotope_all, d_mz_list, d_rt_list, d_corr_list, model='rlm', reassign_err=False):
+def iso_grid_pre(var_info, isotope_all, d_mz_list, d_rt_list, d_corr_list, model='rlm', reassign_err=True):
     file = pd.read_excel(var_info, engine='openpyxl')
     name_mz = file['mzmed'].astype(str).str.split(".")
     name_rt = file['rtmed'].astype(str).str.split(".")
@@ -275,21 +295,58 @@ def iso_grid_pre(var_info, isotope_all, d_mz_list, d_rt_list, d_corr_list, model
     return incorrect_count, total_count
 
 
-def plot_isomatch(isotope_all, model='rlm', title='all'):
-    plt.figure(figsize=(8, 6))
-    for i in range(min(max(isotope_all['iso_type']) + 1, 3)):
-        x = list(isotope_all['mz_ref'][isotope_all['iso_type'] == i])
-        y = list(isotope_all['fi_ratio'][isotope_all['iso_type'] == i])
-        plt.scatter(x, y, s=3)
-        if model == 'rlm':
-            gradients = fit_rlm(isotope_all)
-            plt.plot([0] + [x[-1]], [0] + [x[-1] * gradients[i]], 'r')
-    plt.xlim([0, 1200])
-    plt.ylim([0, 1])
-    plt.title(title + ' isotope matches')
-    plt.xlabel('m/z')
-    plt.ylabel('fi_ratio')
-    plt.savefig(title+'_isotope_matches.png')
+# plot isotope features in RT, MZ and correlation
+def plot_isohist(isotope_df, title='ref'):
+    fig, axes = plt.subplots(2, 3, figsize=(15, 7))
+
+    axes[0, 0].hist(isotope_df['rt_tar'] - isotope_df['rt_ref'], bins=np.linspace(-0.005, 0.005, 100), range=(-0.005, 0.005))
+    axes[0, 0].set_xlabel('RT difference')
+    axes[0, 0].set_ylabel('')
+    axes[0, 0].set_title('RT difference between isotopes')
+    axes[0, 0].set_xlim([-0.005, 0.005])
+
+    axes[0, 1].hist(isotope_df['mz_tar'] - isotope_df['mz_ref'] - 1.003055, bins=np.linspace(-0.005, 0.005, 100), range=(-0.005, 0.005))
+    axes[0, 1].set_xlabel('MZ difference')
+    axes[0, 1].set_ylabel('')
+    axes[0, 1].set_title('MZ difference between isotopes')
+    axes[0, 1].set_xlim([-0.005, 0.005])
+
+    axes[0, 2].hist(isotope_df['correlation'], bins=np.linspace(0.5, 1, 100), range=(0.5, 1))
+    axes[0, 2].set_xlabel('Pearson correlation')
+    axes[0, 2].set_ylabel('')
+    axes[0, 2].set_title('Pearson correlation between isotopes')
+    axes[0, 2].set_xlim([0.5, 1])
+
+    im = axes[1, 0].scatter(isotope_df['rt_tar'] - isotope_df['rt_ref'], isotope_df['correlation'], s=20, alpha=0.8,
+                            c=np.abs(isotope_df['mz_tar'] - isotope_df['mz_ref'] - 1.003055), cmap='coolwarm')
+    fig.colorbar(im, ax=axes[1, 0])
+    axes[1, 0].set_xlabel('RT difference')
+    axes[1, 0].set_ylabel('Pearson correlation')
+    axes[1, 0].set_title('Coloured by absolute MZ difference')
+    axes[1, 0].set_xlim([-0.005, 0.005])
+    axes[1, 0].set_ylim([0.5, 1])
+
+    im = axes[1, 1].scatter(isotope_df['mz_tar'] - isotope_df['mz_ref'] - 1.003055, isotope_df['correlation'], s=20,
+                            alpha=0.8, c=np.abs(isotope_df['rt_tar'] - isotope_df['rt_ref']), cmap='coolwarm')
+    fig.colorbar(im, ax=axes[1, 1])
+    axes[1, 1].set_xlabel('MZ difference')
+    axes[1, 1].set_ylabel('Pearson correlation')
+    axes[1, 1].set_title('Coloured by absolute RT difference')
+    axes[1, 1].set_xlim([-0.005, 0.005])
+    axes[1, 1].set_ylim([0.5, 1])
+
+    im = axes[1, 2].scatter(isotope_df['rt_tar'] - isotope_df['rt_ref'],
+                            isotope_df['mz_tar'] - isotope_df['mz_ref'] - 1.003055, s=20, alpha=0.8,
+                            c=isotope_df['correlation'], cmap='coolwarm')
+    fig.colorbar(im, ax=axes[1, 2])
+    axes[1, 2].set_xlabel('RT difference')
+    axes[1, 2].set_ylabel('MZ difference')
+    axes[1, 2].set_title('Coloured by Pearson correlation')
+    axes[1, 2].set_xlim([-0.005, 0.005])
+    axes[1, 2].set_ylim([-0.005, 0.005])
+
+    fig.tight_layout()
+    plt.savefig(title+'_isotope_features.png', dpi=200)
     plt.close()
 
 
@@ -310,9 +367,9 @@ def best_threshold(isotope_all, incorrect_count, total_count, d_mz_list, d_rt_li
 
 
 # select the best setting of thresholds using linear regression
-def best_threshold_1(isotope_all, incorrect_count, total_count, d_mz_list, d_rt_list, d_corr_list):
-    reg = LinearRegression().fit(total_count.flatten().reshape((-1, 1)), incorrect_count.flatten())
-    y = incorrect_count - reg.coef_[0] * total_count
+def best_threshold_1(isotope_all, incorrect_count, total_count, d_rt_list, d_mz_list, d_corr_list, plot='wolabel', model='rlm'):
+    reg = LinearRegression().fit((total_count - incorrect_count).flatten().reshape((-1, 1)), incorrect_count.flatten())
+    y = incorrect_count - reg.coef_[0] * (total_count - incorrect_count)
     index = np.unravel_index(np.argmin(y), y.shape)
     settings = [d_mz_list[index[0]], d_rt_list[index[1]], d_corr_list[index[2]]]
     index_mz = (isotope_all['mz_tar'] - isotope_all['mz_ref']).between(1.003055 - settings[0], 1.003055 + settings[0])
@@ -322,7 +379,79 @@ def best_threshold_1(isotope_all, incorrect_count, total_count, d_mz_list, d_rt_
     isotope_sublist = isotope_all[index].reset_index(drop=True)
     iso_type = iso_classify(isotope_sublist)
     iso_reassign = reassign_label(isotope_sublist, model='rlm')
+    if plot == 'wolabel' or plot == 'wlabel':
+        plt.style.use('seaborn-darkgrid')
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+        x = np.linspace(0, 0.99, len(d_rt_list))[:, None, None]
+        y = np.linspace(0, 0.99, len(d_mz_list))[None, :, None]
+        z = np.linspace(0, 0.99, len(d_corr_list))[None, None, :]
+        x, y, z = np.broadcast_arrays(x, y, z)
+        C = np.stack((x, y, z), axis=-1)
+        x = np.linspace(1 / 60, 0.001, len(d_rt_list))[None, :, None]
+        y = np.linspace(0.01, 0.001, len(d_mz_list))[:, None, None]
+        z = np.linspace(0.5, 0.9, len(d_corr_list))[None, None, :]
+        x, y, z = np.broadcast_arrays(x, y, z)
+        axes[0].scatter((total_count - incorrect_count), incorrect_count.flatten(), c=C.reshape((-1, 3)), s=50)
+        axes[1].scatter((total_count - incorrect_count), incorrect_count.flatten(), c=C.reshape((-1, 3)), s=50)
+
+        if plot == 'wlabel':
+            for line in range((total_count - incorrect_count).flatten().shape[0]):
+                plt.annotate([x.flatten()[line], round(y.flatten()[line], 4), z.flatten()[line]],
+                             ((total_count - incorrect_count).flatten()[line], incorrect_count.flatten()[line]))
+
+        axes[0].plot([0] + [np.max(total_count - incorrect_count)+30],
+                     [0 + reg.intercept_] + [(np.max(total_count - incorrect_count)+30) * reg.coef_[0] + reg.intercept_], 'r')
+
+        ind = np.argmin(incorrect_count-reg.coef_[0]*(total_count - incorrect_count))
+        d = incorrect_count.flatten()[ind] - (total_count - incorrect_count).flatten()[ind] * reg.coef_[0]
+        axes[1].plot([0] + [np.max(total_count - incorrect_count)+30],
+                     [0 + d] + [(np.max(total_count - incorrect_count)+30) * reg.coef_[0] + d], 'r')
+
+        axes[0].set_xlabel('number of correct isotope matches')
+        axes[0].set_ylabel('number of incorrect isotope matches')
+        axes[0].set_xlim([np.min(total_count - incorrect_count)-50, np.max(total_count - incorrect_count)+50])
+        axes[0].set_ylim([0, np.max(incorrect_count)+10])
+        axes[1].set_xlabel('number of correct isotope matches')
+        axes[1].set_ylabel('number of incorrect isotope matches')
+        axes[1].set_xlim([np.min(total_count - incorrect_count)-50, np.max(total_count - incorrect_count)+50])
+        axes[1].set_ylim([0, np.max(incorrect_count)+10])
+
+        fig.tight_layout()
+        plt.savefig(model+'_threshold_selection.png', dpi=200)
+        plt.close()
     return settings, iso_type, iso_reassign
+
+
+# plot Fi ratio vs MZ between isotopic matches
+def plot_isomatch(isotope_df, isotope_reassign, model='plain', title='all'):
+    plt.style.use('seaborn-darkgrid')
+    plt.figure(figsize=(8, 6))
+    for i in range(min(max(isotope_reassign['iso_type']) + 1, 3)):
+        x = list(isotope_reassign['mz_ref'][isotope_reassign['iso_type'] == i])
+        y = list(isotope_reassign['fi_ratio'][isotope_reassign['iso_type'] == i])
+        plt.scatter(x, y, s=10, label='+%s to +%s' % (i, i+1))
+    if model == 'rlm':
+        gradients = fit_rlm(isotope_df)
+        for i in range(min(max(isotope_reassign['iso_type']) + 1, 3)):
+            plt.plot([0] + [max(isotope_reassign['mz_ref'])+10], [0] + [(max(isotope_reassign['mz_ref'])+10) * gradients[i]], 'r')
+    elif model == 'svm':
+        gradients = fit_svm(isotope_df)
+        for i in range(min(max(isotope_reassign['iso_type']), 2)):
+            plt.plot([0] + [max(isotope_reassign['mz_ref'])+10], [0] + [(max(isotope_reassign['mz_ref'])+10) * gradients[i]], 'r')
+
+    plt.xlim([0, max(isotope_reassign['mz_ref'])+20])
+    plt.ylim([0, 1])
+    plt.xlabel('MZ ref')
+    plt.ylabel('FI lowtohigh ratio between isotopic matches')
+    plt.legend()
+    if model == 'plain':
+        plt.title(title + ' isotope matches coloured by isotope type')
+        plt.savefig(title + '_isotope_matches.png', dpi=200)
+    else:
+        plt.title(title + ' isotope matches coloured by isotope type using ' + model)
+        plt.savefig(model + '_' + title + '_isotope_matches.png', dpi=200)
+    plt.close()
 
 
 # obtain the list of all features with corresponding isotope type
@@ -344,7 +473,7 @@ def iso_final(var_info, iso_reassign):
         elif var.iloc[id_r, 4] == iso_reassign.iloc[i, 5]:
             id_t = np.where(var.iloc[:, 0] == iso_reassign.iloc[i, 1])[0][0]
             var.iloc[id_t, 4] = iso_reassign.iloc[i, 5] + 1
-    var.iloc[:, 4].replace('Nan', 0)
+    var.iloc[:, 4].replace('Nan', 0, inplace=True)
     return var
 
 
@@ -497,12 +626,12 @@ def add_final(isotope_type, isotope_match, add_df):
 
 
 # plot adduct networks
-def plot_add(add_df):
+def plot_add(add_df, title='ref'):
     for i in range(max(add_df['iso_type'])+1):
         adduct_i = add_df[add_df['iso_type'] == i]
         g = igraph.Graph.DataFrame(adduct_i[['reference', 'target']], directed=True)
         g.es["label"] = list(adduct_i['add_type'])
-        igraph.plot(g, 'adduct_graph_'+str(i)+'.png', bbox=((3.2-i)*1000, (3.2-i)*1000), vertex_size=5,
+        igraph.plot(g, title+'_adduct_graph_'+str(i)+'.png', bbox=((3.2-i)*len(add_df)*2, (3.2-i)*len(add_df)*2), vertex_size=5,
                     edge_arrow_size=1, edge_arrow_width=0.5, vertex_label_size=5)
 
 
@@ -551,7 +680,7 @@ def carbonchain_match(var_info, data, iso_add_type, d_mz, d_rt, d_corr=-1, chain
 
 
 # delete the false positive c2h4 matches and plot c2h4 matches
-def carbonchain_tp(c2h4_all, model='lowess', frac=0.3, mad=3, plot=False):
+def carbonchain_tp(c2h4_all, model='lowess', frac=0.3, mad=3, plot=False, title='ref'):
     x = c2h4_all['rt_ref'].values
     y = (c2h4_all['rt_tar'] - c2h4_all['rt_ref']).values
     s = np.argsort(x)
@@ -568,15 +697,59 @@ def carbonchain_tp(c2h4_all, model='lowess', frac=0.3, mad=3, plot=False):
         raise Exception("model name: 'lowess' or 'loess'")
     c2h4 = c2h4_all.iloc[s[np.abs(y - yout) <= stats.median_abs_deviation(y-yout) * mad]].sort_index()
     if plot:
-        plt.scatter(x[np.abs(y - yout) > stats.median_abs_deviation(y-yout) * mad], y[np.abs(y - yout) > stats.median_abs_deviation(y-yout) * mad], s=5, c='orange', label='outliers')
-        plt.scatter(x[np.abs(y - yout) <= stats.median_abs_deviation(y-yout) * mad], y[np.abs(y - yout) <= stats.median_abs_deviation(y-yout) * mad], s=5, c='b', label='c2h4')
+        plt.scatter(x[np.abs(y - yout) > stats.median_abs_deviation(y-yout) * mad], y[np.abs(y - yout) > stats.median_abs_deviation(y-yout) * mad], s=10, c='orange', label='outliers')
+        plt.scatter(x[np.abs(y - yout) <= stats.median_abs_deviation(y-yout) * mad], y[np.abs(y - yout) <= stats.median_abs_deviation(y-yout) * mad], s=10, c='b', label='c2h4')
         plt.plot(xout, yout, 'r')
         plt.xlabel('rt')
         plt.ylabel('rt difference')
         plt.legend()
-        plt.title('c2h4 match')
+        plt.title('C2H4 match regression')
+        plt.savefig(title+'_C2H4_match_regression.png', dpi=200)
         plt.close()
     return c2h4
+
+
+# plot C2H4 matches on MZ/RT plot
+def plot_c2h4(var_info, c2h4_df, title='ref'):
+    var_df = pd.read_excel(var_info, engine='openpyxl')
+
+    plt.style.use('seaborn-darkgrid')
+    plt.figure(figsize=(8, 6))
+    plt.scatter(var_df['rtmed'], var_df['mzmed'], s=10, c='black')
+    for i in range(len(c2h4_df)):
+        plt.plot(c2h4_df.iloc[i][['rt_ref', 'rt_tar']].values, c2h4_df.iloc[i][['mz_ref', 'mz_tar']].values, 'r', lw=0.8)
+    plt.xlabel('RT')
+    plt.ylabel('MZ')
+    plt.xlim([0, np.max(var_df['rtmed'])+1])
+    plt.ylim([0, np.max(var_df['mzmed'])+100])
+    plt.title('C2H4 match')
+    plt.savefig(title+'_C2H4_match.png', dpi=200)
+    plt.close()
+
+
+# plot two datasets in MZ/RT coloured by FI
+def plot_datasets(var_info_1, var_info_2, title_r='', title_t=''):
+    var_df_1 = pd.read_excel(var_info_1, engine='openpyxl')
+    var_df_2 = pd.read_excel(var_info_2, engine='openpyxl')
+
+    plt.style.use('seaborn-whitegrid')
+    fig, axs = plt.subplots(ncols=2, nrows=1, sharex='all', sharey='all', figsize=(15, 4.5))
+    im = axs[0].scatter(var_df_1['rtmed'], var_df_1['mzmed'], s=5, c=np.log10(var_df_1['fimed']), cmap='coolwarm')
+    axs[0].set_xlabel('RT (min)', fontsize=8)
+    axs[0].set_ylabel('MZ (m/z unit)', fontsize=8)
+    axs[0].set_title('Reference '+title_r)
+    cb = fig.colorbar(im, ax=axs[0], ticks=list(np.arange(1, 10)))
+    cb.ax.tick_params(labelsize='7')
+
+    im = axs[1].scatter(var_df_2['rtmed'], var_df_2['mzmed'], s=5, c=np.log10(var_df_2['fimed']), cmap='coolwarm')
+    axs[1].set_xlabel('RT (min)', fontsize=8)
+    axs[1].set_ylabel('MZ (m/z unit)', fontsize=8)
+    axs[1].set_title('Target '+title_t)
+    cb = fig.colorbar(im, ax=axs[1], ticks=list(np.arange(1, 10)))
+    cb.ax.tick_params(labelsize='7')
+
+    plt.savefig('mzrts.png', dpi=200)
+    plt.close()
 
 
 # match two datasets
@@ -595,15 +768,15 @@ def allfeature_match(iso_add_type_1, iso_add_type_2, d_mz=0.015, d_rt_l=0.1, d_r
             if mz_min <= iso_add_type_2.iloc[j, 1] <= mz_max:
                 # rt threshold
                 if rt_min <= iso_add_type_2.iloc[j, 2] <= rt_max:
-                    if iso_add_type_2.iloc[i, 4] == iso_add_type_2.iloc[j, 4]:
-                        if iso_add_type_2.iloc[i, 5] == iso_add_type_2.iloc[j, 5] and iso_add_type_2.iloc[i, 5] != 'Nan':
+                    if iso_add_type_1.iloc[i, 4] == iso_add_type_2.iloc[j, 4]:
+                        if iso_add_type_1.iloc[i, 5] == iso_add_type_2.iloc[j, 5] and iso_add_type_1.iloc[i, 5] != 'Nan':
                             feature_list_strict.append([iso_add_type_1.iloc[i, 0], iso_add_type_2.iloc[j, 0],
                                                         iso_add_type_1.iloc[i, 1], iso_add_type_2.iloc[j, 1],
                                                         iso_add_type_1.iloc[i, 2], iso_add_type_2.iloc[j, 2],
                                                         iso_add_type_1.iloc[i, 3], iso_add_type_2.iloc[j, 3],
-                                                        iso_add_type_1.iloc[i, 4], iso_add_type_2.iloc[i, 5]])
-                        if iso_add_type_2.iloc[i, 5] == iso_add_type_2.iloc[j, 5] or iso_add_type_2.iloc[i, 5] == 'Nan' or iso_add_type_2.iloc[j, 5] == 'Nan':
-                            add_type = iso_add_type_2.iloc[i, 5] if iso_add_type_2.iloc[i, 5] != 'Nan' else iso_add_type_2.iloc[j, 5]
+                                                        iso_add_type_1.iloc[i, 4], iso_add_type_1.iloc[i, 5]])
+                        if iso_add_type_1.iloc[i, 5] == iso_add_type_2.iloc[j, 5] or iso_add_type_1.iloc[i, 5] == 'Nan' or iso_add_type_2.iloc[j, 5] == 'Nan':
+                            add_type = iso_add_type_1.iloc[i, 5] if iso_add_type_1.iloc[i, 5] != 'Nan' else iso_add_type_2.iloc[j, 5]
                             feature_list.append([iso_add_type_1.iloc[i, 0], iso_add_type_2.iloc[j, 0],
                                                  iso_add_type_1.iloc[i, 1], iso_add_type_2.iloc[j, 1],
                                                  iso_add_type_1.iloc[i, 2], iso_add_type_2.iloc[j, 2],
@@ -615,7 +788,7 @@ def allfeature_match(iso_add_type_1, iso_add_type_2, d_mz=0.015, d_rt_l=0.1, d_r
                                                       'fi_ref', 'fi_tar', 'iso_type', 'add_type'])
     feature_all_strict = pd.DataFrame(feature_list_strict, columns=['reference', 'target', 'mz_ref', 'mz_tar', 'rt_ref', 'rt_tar',
                                                                     'fi_ref', 'fi_tar', 'iso_type', 'add_type'])
-    if np.median(feature_all['fi_ref'] - feature_all['fi_tar'] >= 0) >= 0:
+    if np.median(feature_all['fi_ref'] - feature_all['fi_tar']) >= 0:
         feature_all = feature_all[feature_all['fi_ref'] >= feature_all['fi_tar']]
         feature_all_strict = feature_all_strict[feature_all_strict['fi_ref'] >= feature_all_strict['fi_tar']]
     else:
@@ -655,7 +828,7 @@ def merge_networks(network_list):
 # perfect_match: for a subnetwork in dataset A, it connects to a subnetwork b in dataset B if b has the most number of matches;
 #                or it connects to more than one subnetworks b1 and b2 in dataset B if b1 and b2 have the same number of connections and no intersection.
 # least_match: the least number of feature matches in a subnetwork connection
-def network_connection(feature_all, nl_1, nl_2, d_rt, multi_match=False, least_match=2, perfect_match=False):
+def network_connection(feature_all, nl_1, nl_2, d_rt, multi_match=True, least_match=2, perfect_match=True):
     network_match = []
     for i in range(len(nl_1)):
         network_score = np.zeros(len(nl_2))
@@ -682,8 +855,10 @@ def network_connection(feature_all, nl_1, nl_2, d_rt, multi_match=False, least_m
             network_meanrt = network_meanrt / (network_score + 0.000001)
             if len(cc2_id) == 1:
                 tar_n = cc2_id[0]
-            elif perfect_match and len(list(set(network_c[cc2_id[0]]).intersection(network_c[cc2_id[1]]))) > 0:
-                break
+            elif perfect_match:
+                if len(list(set(network_c[cc2_id[0]]).intersection(network_c[cc2_id[1]]))) > 0:
+                    break
+                tar_n = cc2_id[np.argmin(network_mzdiff[cc2_id])]
             else:
                 tar_n = cc2_id[np.argmin(network_mzdiff[cc2_id])]
             if any(network_c[tar_n]) in network_ref:
@@ -918,7 +1093,7 @@ def all_match_penal(feature_all, feature_hp, mad=5, w=None, plot=True):
 
         fig.tight_layout()
         fig.show()
-        plt.savefig('workflow.png')
+        plt.savefig('workflow.png', dpi=200)
         plt.close()
     return feature_all
 
@@ -998,14 +1173,14 @@ def plot_goodmatch(feature_all, feature_single, feature_good):
 
     fig.tight_layout()
     fig.show()
-    plt.savefig('good_match.png')
+    plt.savefig('good_match.png', dpi=200)
     plt.close()
 
 
 # evaluate good matches
 # if corr >= 1, it is the number of highly correlated features,
 # else (corr < 1), it is the correlation threshold to select features
-def fmatch_eval(var_info_1, var_info_2, data_1, data_2, feature_good, d_rt=1/60, corr=20):
+def fmatch_eval(var_info_1, var_info_2, data_1, data_2, feature_good, d_rt=1/60, corr=0.6):
     var_df_1 = pd.read_excel(var_info_1, engine='openpyxl')
     var_df_2 = pd.read_excel(var_info_2, engine='openpyxl')
     if data_1[-3:] == 'csv':
@@ -1024,13 +1199,11 @@ def fmatch_eval(var_info_1, var_info_2, data_1, data_2, feature_good, d_rt=1/60,
         name_rt = var_df_1['rtmed'].astype(str).str.split(".")
         var_df_1['MZRT_str'] = 'SLPOS_' + name_mz.str[0] + '.' + name_mz.str[1].str[:4] + '_' + name_rt.str[0] + '.' + name_rt.str[1].str[:4]
     var_df_1 = var_df_1[['MZRT_str', 'mzmed', 'rtmed', 'fimed']]
-    var_ind_1 = var_df_1.sort_values(by=['mzmed']).index
     if 'MZRT_str' not in var_df_2.columns:
         name_mz = var_df_2['mzmed'].astype(str).str.split(".")
         name_rt = var_df_2['rtmed'].astype(str).str.split(".")
         var_df_2['MZRT_str'] = 'SLPOS_' + name_mz.str[0] + '.' + name_mz.str[1].str[:4] + '_' + name_rt.str[0] + '.' + name_rt.str[1].str[:4]
     var_df_2 = var_df_2[['MZRT_str', 'mzmed', 'rtmed', 'fimed']]
-    var_ind_2 = var_df_2.sort_values(by=['mzmed']).index
     for i in range(len(feature_good)):
         rt_ref = feature_good.iloc[i, 4]
         rt_tar = feature_good.iloc[i, 5]
@@ -1055,7 +1228,11 @@ def fmatch_eval(var_info_1, var_info_2, data_1, data_2, feature_good, d_rt=1/60,
                 tar_df = tar_df.iloc[:corr]
         else:
             ref_df = ref_df[ref_df['correlation'] >= corr].reset_index(drop=True)
+            if len(ref_df) > 20:
+                ref_df = ref_df.iloc[:20]
             tar_df = tar_df[tar_df['correlation'] >= corr].reset_index(drop=True)
+            if len(tar_df) > 20:
+                tar_df = tar_df.iloc[:20]
         n_match = 0
         for j in range(len(ref_df)):
             if ref_df.iloc[j, 0] in feature_good['reference'].values:
@@ -1070,22 +1247,137 @@ def fmatch_eval(var_info_1, var_info_2, data_1, data_2, feature_good, d_rt=1/60,
     return feature_good
 
 
+# plot evaluation
+# todo
 def plot_eval(feature_good):
-    for i in range(len(feature_good)):
-        plt.scatter(feature_good.iloc[i, -2] + 0.5 * np.random.rand(1),
-                    feature_good.iloc[i, -1] + 0.5 * np.random.rand(1), c='black', s=3)
-        plt.xticks(np.arange(0, 20, 5))
-    plt.savefig('eval.png')
+    plt.style.use('seaborn-whitegrid')
+
+    # reftar plot coloured by number of common features
+    plt.scatter(feature_good.iloc[:, -2] + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
+                feature_good.iloc[:, -1] + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
+                c=feature_good.iloc[:, -3], cmap='coolwarm', alpha=0.8, s=10)
+    plt.colorbar()
+    plt.xticks(np.arange(0, feature_good.iloc[:, -2].max()+1, 5))
+    plt.yticks(np.arange(0, feature_good.iloc[:, -1].max()+1, 5))
+    plt.xlabel('number of highly correlated features in reference')
+    plt.ylabel('number of highly correlated features in target')
+    plt.title('evaluation coloured by number of common features')
+    plt.savefig('eval_common.png', dpi=200)
     plt.close()
-    for i in range(len(feature_good)):
-        plt.scatter(feature_good.iloc[i, -3] + 0.5 * np.random.rand(1),
-                    min(feature_good.iloc[i, -1], feature_good.iloc[i, -2]) + 0.5 * np.random.rand(1), c='black', s=3)
-        plt.xticks(np.arange(0, 20, 5))
-    plt.savefig('eval_min.png')
+
+    # reftar plot coloured by penalisation score
+    plt.scatter(feature_good.iloc[:, -2] + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
+                feature_good.iloc[:, -1] + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
+                c=feature_good.iloc[:, -4], cmap='coolwarm', alpha=0.8, s=10)
+    plt.colorbar()
+    plt.xticks(np.arange(0, feature_good.iloc[:, -2].max()+1, 5))
+    plt.yticks(np.arange(0, feature_good.iloc[:, -1].max()+1, 5))
+    plt.xlabel('number of highly correlated features in reference')
+    plt.ylabel('number of highly correlated features in target')
+    plt.title('evaluation coloured by MZRT penalisation score')
+    plt.savefig('eval_ps.png', dpi=200)
     plt.close()
+
+    # reftar plot coloured by caden score
+    C = []
     for i in range(len(feature_good)):
-        plt.scatter(feature_good.iloc[i, -3] + 0.5 * np.random.rand(1),
-                    max(feature_good.iloc[i, -1], feature_good.iloc[i, -2]) + 0.5 * np.random.rand(1), c='black', s=3)
-        plt.xticks(np.arange(0, 20, 5))
-    plt.savefig('eval_max.png')
+        C.append((np.log(feature_good.iloc[i, -3] + 1) + 1) / (
+                    np.log(max(feature_good.iloc[i, -1], feature_good.iloc[i, -2]) + 1) + 1))
+    plt.scatter(feature_good.iloc[:, -2] + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
+                feature_good.iloc[:, -1] + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
+                c=C, cmap='coolwarm', alpha=0.8, s=10)
+    plt.colorbar()
+    plt.xticks(np.arange(0, feature_good.iloc[:, -2].max()+1, 5))
+    plt.yticks(np.arange(0, feature_good.iloc[:, -1].max()+1, 5))
+    plt.xlabel('number of highly correlated features in reference')
+    plt.ylabel('number of highly correlated features in target')
+    plt.title('evaluation coloured by caden score')
+    plt.savefig('eval_cs.png', dpi=200)
     plt.close()
+
+    # min plot coloured by penalisation score
+    m = []
+    for i in range(len(feature_good)):
+        m.append(min(feature_good.iloc[i, -1], feature_good.iloc[i, -2]))
+    plt.scatter(feature_good.iloc[:, -3] + np.random.rand(len(feature_good)),
+                m + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
+                c=feature_good.iloc[:, -4], cmap='coolwarm', alpha=0.8, s=10)
+    plt.colorbar()
+    plt.xticks(np.arange(0, feature_good.iloc[:, -2:].max().max()+1, 5))
+    plt.yticks(np.arange(0, feature_good.iloc[:, -2:].max().max()+1, 5))
+    plt.xlabel('number of common features')
+    plt.ylabel('minimum number of features')
+    plt.title('evaluation coloured by MZRT penalisation score')
+    plt.savefig('eval_min_ps.png', dpi=200)
+    plt.close()
+
+    # min plot coloured by caden score
+    m = []
+    C = []
+    for i in range(len(feature_good)):
+        m.append(min(feature_good.iloc[i, -1], feature_good.iloc[i, -2]))
+        C.append((np.log(feature_good.iloc[i, -3] + 1) + 1) / (
+                np.log(max(feature_good.iloc[i, -1], feature_good.iloc[i, -2]) + 1) + 1))
+    plt.scatter(feature_good.iloc[:, -3] + np.random.rand(len(feature_good)),
+                m + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
+                c=C, cmap='coolwarm', alpha=0.8, s=10)
+    plt.colorbar()
+    plt.xticks(np.arange(0, feature_good.iloc[:, -2:].max().max() + 1, 5))
+    plt.yticks(np.arange(0, feature_good.iloc[:, -2:].max().max() + 1, 5))
+    plt.xlabel('number of common features')
+    plt.ylabel('minimum number of features')
+    plt.title('evaluation coloured by caden score')
+    plt.savefig('eval_min_cs.png', dpi=200)
+    plt.close()
+
+    # max plot coloured by penalisation score
+    m = []
+    for i in range(len(feature_good)):
+        m.append(max(feature_good.iloc[i, -1], feature_good.iloc[i, -2]))
+    plt.scatter(feature_good.iloc[:, -3] + np.random.rand(len(feature_good)),
+                m + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
+                c=feature_good.iloc[:, -4], cmap='coolwarm', alpha=0.8, s=10)
+    plt.colorbar()
+    plt.xticks(np.arange(0, feature_good.iloc[:, -2:].max().max() + 1, 5))
+    plt.yticks(np.arange(0, feature_good.iloc[:, -2:].max().max() + 1, 5))
+    plt.xlabel('number of common features')
+    plt.ylabel('maximum number of features')
+    plt.title('evaluation coloured by MZRT penalisation score')
+    plt.savefig('eval_max_ps.png', dpi=200)
+    plt.close()
+
+    # max plot coloured by Caden score
+    m = []
+    C = []
+    for i in range(len(feature_good)):
+        m.append(max(feature_good.iloc[i, -1], feature_good.iloc[i, -2]))
+        C.append((np.log(feature_good.iloc[i, -3] + 1) + 1) / (
+                    np.log(max(feature_good.iloc[i, -1], feature_good.iloc[i, -2]) + 1) + 1))
+    plt.scatter(feature_good.iloc[:, -3] + np.random.rand(len(feature_good)),
+                m + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
+                c=C, cmap='coolwarm', alpha=0.8, s=10)
+    plt.colorbar()
+    plt.xticks(np.arange(0, feature_good.iloc[:, -2:].max().max()+1, 5))
+    plt.yticks(np.arange(0, feature_good.iloc[:, -2:].max().max()+1, 5))
+    plt.xlabel('number of common features')
+    plt.ylabel('maximum number of features')
+    plt.title('evaluation coloured by caden score')
+    plt.savefig('eval_max_cs.png', dpi=200)
+    plt.close()
+
+    # score plot coloured by number of common features
+    C = []
+    for i in range(len(feature_good)):
+        c = (np.log(feature_good.iloc[i, -3] + 1) + 1) / (
+                np.log(min(feature_good.iloc[i, -1], feature_good.iloc[i, -2]) + 1) + 1)
+        if c == 1:
+            c += np.random.rand(1) * 0.02
+        C.append(c)
+    plt.scatter(feature_good.iloc[:, -4], C, c=feature_good.iloc[:, -3], cmap='coolwarm', alpha=0.8, s=1)
+    plt.colorbar()
+    plt.xlabel('MZRT penalisation score')
+    plt.ylabel('caden score')
+    plt.title('evaluation coloured by number of common features')
+    plt.savefig('pc_min.png')
+    plt.close()
+    
