@@ -12,7 +12,7 @@ import statsmodels.api as sm
 
 
 # find all isotope matches with large thresholds
-def iso_match_all(var_info, data, d_mz, d_rt, d_corr):
+def iso_match_all(var_info, data, d_mz, d_rt, d_corr, mz_iso=1.003055):
     file = pd.read_excel(var_info, engine='openpyxl')
     name_mz = file['mzmed'].astype(str).str.split(".")
     name_rt = file['rtmed'].astype(str).str.split(".")
@@ -30,8 +30,8 @@ def iso_match_all(var_info, data, d_mz, d_rt, d_corr):
         # set threshold
         rt_min = var.iloc[i, 2] - d_rt
         rt_max = var.iloc[i, 2] + d_rt
-        mz_min = var.iloc[i, 1] + 1.003055 - d_mz
-        mz_max = var.iloc[i, 1] + 1.003055 + d_mz
+        mz_min = var.iloc[i, 1] + mz_iso - d_mz
+        mz_max = var.iloc[i, 1] + mz_iso + d_mz
         for j in range(i + 1, len(var)):
             # mz threshold
             if mz_min <= var.iloc[j, 1] <= mz_max:
@@ -57,8 +57,9 @@ def iso_match_all(var_info, data, d_mz, d_rt, d_corr):
 
 # plot isotope networks
 def plot_iso(iso_df):
-    g = igraph.Graph.DataFrame(iso_df[['reference', 'target', 'correlation']], directed=False)
-    igraph.plot(g, 'isotope_graph.png', layout=g.layout("kk"), vertex_size=3)
+    g = nx.from_pandas_edgelist(iso_df, 'reference', 'target', 'correlation')
+    nx.draw_spring(g, node_size=2)
+    plt.savefig('isotope_graph.png')
 
 
 # get connected components dataframe
@@ -71,7 +72,6 @@ def connected_comp(iso_df):
 
 # classify the isotopic matches
 # also accept false double isotopes, such as +0, +0, +1, +2, record the false double isotope matches as -1
-# todo: check len(iso_df) == len(iso_type)
 def iso_classify(iso_df, w=1.003055):
     # get connected component list of isotope match dataframe
     cc_list = connected_comp(iso_df)
@@ -180,32 +180,13 @@ def fit_svm(iso_type):
 def count_incorrect(iso_type, model='rlm'):
     num_incorrect = 0
     if model == 'rlm':
-        gradients = fit_rlm(iso_type)
-        std = std_class(iso_type)
-        for i in range(len(iso_type)):
-            dis = []
-            x = iso_type.iloc[i, 2]
-            y = iso_type.iloc[i, 4]
-            label = iso_type.iloc[i, 5]
-            for j in range(min(max(iso_type['iso_type']) + 1, 3)):
-                dis.append(np.abs((y - x * gradients[j]) * (np.sqrt(1 + (gradients[j]) ** 2))))
-            dis = [a / b for a, b in zip(dis, std)]
-            if dis.index(min(dis)) != label:
-                num_incorrect += 1
+        iso_type_new = reassign_label(iso_type, model='rlm')
+
     elif model == 'svm':
-        for i in range(min(max(iso_type['iso_type']), 2)):
-            x_1 = iso_type[['mz_ref', 'fi_ratio']][iso_type['iso_type'] == i].to_numpy()
-            x_1 = x_1.reshape((-1, x_1.shape[-1]))
-            x_2 = iso_type[['mz_ref', 'fi_ratio']][iso_type['iso_type'] == i + 1].to_numpy()
-            x_2 = x_2.reshape((-1, x_2.shape[-1]))
-            x = np.concatenate((x_1, x_2), axis=0)
-            y = np.array([0] * x_1.shape[0] + [1] * x_2.shape[0])
-            model = svm.LinearSVC(penalty='l2', fit_intercept=False, C=5, dual=False, class_weight='balanced')
-            model.fit(x, y)
-            pred = model.predict(x)
-            num_incorrect += sum(pred != y)
+        iso_type_new = reassign_label(iso_type, model='svm')
     else:
         raise Exception("model name: 'rlm' or 'svm'")
+    num_incorrect = sum(iso_type.iloc[:, 5] != iso_type_new.iloc[:, 5])
     num_incorrect += len(iso_type[iso_type['iso_type'] == -1])
     return num_incorrect
 
@@ -238,18 +219,21 @@ def reassign_label(isotope_sub, model='rlm'):
             if dis.index(min(dis)) != label:
                 iso_type.iloc[5] = dis.index(min(dis))
     elif model == 'svm':
-        for i in range(min(max(iso_type['iso_type']), 2)):
-            x_1 = iso_type[['mz_ref', 'fi_ratio']][iso_type['iso_type'] == i].to_numpy()
-            x_1 = x_1.reshape((-1, x_1.shape[-1]))
-            x_2 = iso_type[['mz_ref', 'fi_ratio']][iso_type['iso_type'] == i + 1].to_numpy()
-            x_2 = x_2.reshape((-1, x_2.shape[-1]))
-            x = np.concatenate((x_1, x_2), axis=0)
-            y = np.array([i for j in range(x_1.shape[0])] + [i + 1 for j in range(x_2.shape[0])])
-            model = svm.LinearSVC(penalty='l2', fit_intercept=False, C=5, dual=False, class_weight='balanced')
-            model.fit(x, y)
-            pred = model.predict(x)
-            iso_type.loc[iso_type.iso_type == i, 'iso_type'] = pred[:x_1.shape[0]]
-            iso_type.loc[iso_type.iso_type == i + 1, 'iso_type'] = pred[x_1.shape[0]:]
+        gradients = fit_svm(iso_type)
+        gradients.append(0)
+        if len(iso_type.index) > 1:
+            for i in range(len(iso_type)):
+                g = iso_type.iloc[i, 4] / iso_type.iloc[i, 2]
+                for j in range(len(gradients)):
+                    if g > gradients[j]:
+                        iso_type.iloc[i, 5] = j
+                        break
+        else:
+            g = iso_type.iloc[4] / iso_type.iloc[2]
+            for j in range(len(gradients)):
+                if g > gradients[j]:
+                    iso_type.iloc[5] = j
+                    break
     else:
         raise Exception("model name: 'rlm' or 'svm'")
     return iso_type
@@ -297,7 +281,7 @@ def iso_grid_pre(var_info, isotope_all, d_mz_list, d_rt_list, d_corr_list, model
 
 # plot isotope features in RT, MZ and correlation
 def plot_isohist(isotope_df, title='ref'):
-    fig, axes = plt.subplots(2, 3, figsize=(15, 7))
+    fig, axes = plt.subplots(2, 3, figsize=(12, 6))
 
     axes[0, 0].hist(isotope_df['rt_tar'] - isotope_df['rt_ref'], bins=np.linspace(-0.005, 0.005, 100), range=(-0.005, 0.005))
     axes[0, 0].set_xlabel('RT difference')
@@ -367,6 +351,7 @@ def best_threshold(isotope_all, incorrect_count, total_count, d_mz_list, d_rt_li
 
 
 # select the best setting of thresholds using linear regression
+# output: settings = [d_mz, d_rt, d_corr]
 def best_threshold_1(isotope_all, incorrect_count, total_count, d_rt_list, d_mz_list, d_corr_list, plot='wolabel', model='rlm'):
     reg = LinearRegression().fit((total_count - incorrect_count).flatten().reshape((-1, 1)), incorrect_count.flatten())
     y = incorrect_count - reg.coef_[0] * (total_count - incorrect_count)
@@ -388,12 +373,12 @@ def best_threshold_1(isotope_all, incorrect_count, total_count, d_rt_list, d_mz_
         z = np.linspace(0, 0.99, len(d_corr_list))[None, None, :]
         x, y, z = np.broadcast_arrays(x, y, z)
         C = np.stack((x, y, z), axis=-1)
-        x = np.linspace(1 / 60, 0.001, len(d_rt_list))[None, :, None]
-        y = np.linspace(0.01, 0.001, len(d_mz_list))[:, None, None]
+        x = np.linspace(0.005, 0.001, len(d_rt_list))[None, :, None]
+        y = np.linspace(0.005, 0.001, len(d_mz_list))[:, None, None]
         z = np.linspace(0.5, 0.9, len(d_corr_list))[None, None, :]
         x, y, z = np.broadcast_arrays(x, y, z)
-        axes[0].scatter((total_count - incorrect_count), incorrect_count.flatten(), c=C.reshape((-1, 3)), s=50)
-        axes[1].scatter((total_count - incorrect_count), incorrect_count.flatten(), c=C.reshape((-1, 3)), s=50)
+        axes[0].scatter((total_count - incorrect_count), incorrect_count.flatten(), c=C.reshape((-1, 3)), s=20)
+        axes[1].scatter((total_count - incorrect_count), incorrect_count.flatten(), c=C.reshape((-1, 3)), s=20)
 
         if plot == 'wlabel':
             for line in range((total_count - incorrect_count).flatten().shape[0]):
@@ -631,7 +616,7 @@ def plot_add(add_df, title='ref'):
         adduct_i = add_df[add_df['iso_type'] == i]
         g = igraph.Graph.DataFrame(adduct_i[['reference', 'target']], directed=True)
         g.es["label"] = list(adduct_i['add_type'])
-        igraph.plot(g, title+'_adduct_graph_'+str(i)+'.png', bbox=((3.2-i)*len(add_df)*2, (3.2-i)*len(add_df)*2), vertex_size=5,
+        igraph.plot(g, title+'_adduct_graph_'+str(i)+'.png', bbox=((3.2-i)*len(add_df)*1.8, (3.2-i)*len(add_df)*1.8), vertex_size=5,
                     edge_arrow_size=1, edge_arrow_width=0.5, vertex_label_size=5)
 
 
@@ -680,7 +665,7 @@ def carbonchain_match(var_info, data, iso_add_type, d_mz, d_rt, d_corr=-1, chain
 
 
 # delete the false positive c2h4 matches and plot c2h4 matches
-def carbonchain_tp(c2h4_all, model='lowess', frac=0.3, mad=3, plot=False, title='ref'):
+def carbonchain_tp(c2h4_all, model='lowess', frac=0.1, mad=3, plot=True, title='ref'):
     x = c2h4_all['rt_ref'].values
     y = (c2h4_all['rt_tar'] - c2h4_all['rt_ref']).values
     s = np.argsort(x)
@@ -732,7 +717,7 @@ def plot_datasets(var_info_1, var_info_2, title_r='', title_t=''):
     var_df_1 = pd.read_excel(var_info_1, engine='openpyxl')
     var_df_2 = pd.read_excel(var_info_2, engine='openpyxl')
 
-    plt.style.use('seaborn-whitegrid')
+    plt.style.use('seaborn-darkgrid')
     fig, axs = plt.subplots(ncols=2, nrows=1, sharex='all', sharey='all', figsize=(15, 4.5))
     im = axs[0].scatter(var_df_1['rtmed'], var_df_1['mzmed'], s=5, c=np.log10(var_df_1['fimed']), cmap='coolwarm')
     axs[0].set_xlabel('RT (min)', fontsize=8)
@@ -754,9 +739,8 @@ def plot_datasets(var_info_1, var_info_2, title_r='', title_t=''):
 
 # match two datasets
 # find all possible feature matches
-def allfeature_match(iso_add_type_1, iso_add_type_2, d_mz=0.015, d_rt_l=0.1, d_rt_r=0.1):
+def allfeature_match(iso_add_type_1, iso_add_type_2, d_mz=0.015, d_rt_l=0.1, d_rt_r=0.1, iso_add_type=False):
     feature_list = []
-    feature_list_strict = []
     for i in range(len(iso_add_type_1)):
         # set threshold
         rt_min = iso_add_type_1.iloc[i, 2] - d_rt_l
@@ -768,35 +752,34 @@ def allfeature_match(iso_add_type_1, iso_add_type_2, d_mz=0.015, d_rt_l=0.1, d_r
             if mz_min <= iso_add_type_2.iloc[j, 1] <= mz_max:
                 # rt threshold
                 if rt_min <= iso_add_type_2.iloc[j, 2] <= rt_max:
-                    if iso_add_type_1.iloc[i, 4] == iso_add_type_2.iloc[j, 4]:
-                        if iso_add_type_1.iloc[i, 5] == iso_add_type_2.iloc[j, 5] and iso_add_type_1.iloc[i, 5] != 'Nan':
-                            feature_list_strict.append([iso_add_type_1.iloc[i, 0], iso_add_type_2.iloc[j, 0],
-                                                        iso_add_type_1.iloc[i, 1], iso_add_type_2.iloc[j, 1],
-                                                        iso_add_type_1.iloc[i, 2], iso_add_type_2.iloc[j, 2],
-                                                        iso_add_type_1.iloc[i, 3], iso_add_type_2.iloc[j, 3],
-                                                        iso_add_type_1.iloc[i, 4], iso_add_type_1.iloc[i, 5]])
-                        if iso_add_type_1.iloc[i, 5] == iso_add_type_2.iloc[j, 5] or iso_add_type_1.iloc[i, 5] == 'Nan' or iso_add_type_2.iloc[j, 5] == 'Nan':
-                            add_type = iso_add_type_1.iloc[i, 5] if iso_add_type_1.iloc[i, 5] != 'Nan' else iso_add_type_2.iloc[j, 5]
-                            feature_list.append([iso_add_type_1.iloc[i, 0], iso_add_type_2.iloc[j, 0],
-                                                 iso_add_type_1.iloc[i, 1], iso_add_type_2.iloc[j, 1],
-                                                 iso_add_type_1.iloc[i, 2], iso_add_type_2.iloc[j, 2],
-                                                 iso_add_type_1.iloc[i, 3], iso_add_type_2.iloc[j, 3],
-                                                 iso_add_type_1.iloc[i, 4], add_type])
+                    if iso_add_type:
+                        if iso_add_type_1.iloc[i, 4] == iso_add_type_2.iloc[j, 4]:
+                            if iso_add_type_1.iloc[i, 5] == iso_add_type_2.iloc[j, 5] or iso_add_type_1.iloc[i, 5] == 'Nan' or iso_add_type_2.iloc[j, 5] == 'Nan':
+                                add_type = iso_add_type_1.iloc[i, 5] if iso_add_type_1.iloc[i, 5] != 'Nan' else iso_add_type_2.iloc[j, 5]
+                                feature_list.append([iso_add_type_1.iloc[i, 0], iso_add_type_2.iloc[j, 0],
+                                                     iso_add_type_1.iloc[i, 1], iso_add_type_2.iloc[j, 1],
+                                                     iso_add_type_1.iloc[i, 2], iso_add_type_2.iloc[j, 2],
+                                                     iso_add_type_1.iloc[i, 3], iso_add_type_2.iloc[j, 3],
+                                                     iso_add_type_1.iloc[i, 4], add_type])
+                    else:
+                        feature_list.append([iso_add_type_1.iloc[i, 0], iso_add_type_2.iloc[j, 0],
+                                             iso_add_type_1.iloc[i, 1], iso_add_type_2.iloc[j, 1],
+                                             iso_add_type_1.iloc[i, 2], iso_add_type_2.iloc[j, 2],
+                                             iso_add_type_1.iloc[i, 3], iso_add_type_2.iloc[j, 3]])
             elif iso_add_type_2.iloc[j, 1] >= mz_max:
                 break
-    feature_all = pd.DataFrame(feature_list, columns=['reference', 'target', 'mz_ref', 'mz_tar', 'rt_ref', 'rt_tar',
-                                                      'fi_ref', 'fi_tar', 'iso_type', 'add_type'])
-    feature_all_strict = pd.DataFrame(feature_list_strict, columns=['reference', 'target', 'mz_ref', 'mz_tar', 'rt_ref', 'rt_tar',
-                                                                    'fi_ref', 'fi_tar', 'iso_type', 'add_type'])
+    if iso_add_type:
+        feature_all = pd.DataFrame(feature_list, columns=['reference', 'target', 'mz_ref', 'mz_tar', 'rt_ref', 'rt_tar',
+                                                          'fi_ref', 'fi_tar', 'iso_type', 'add_type'])
+    else:
+        feature_all = pd.DataFrame(feature_list, columns=['reference', 'target', 'mz_ref', 'mz_tar', 'rt_ref', 'rt_tar',
+                                                          'fi_ref', 'fi_tar'])
     if np.median(feature_all['fi_ref'] - feature_all['fi_tar']) >= 0:
         feature_all = feature_all[feature_all['fi_ref'] >= feature_all['fi_tar']]
-        feature_all_strict = feature_all_strict[feature_all_strict['fi_ref'] >= feature_all_strict['fi_tar']]
     else:
         feature_all = feature_all[feature_all['fi_ref'] <= feature_all['fi_tar']]
-        feature_all_strict = feature_all_strict[feature_all_strict['fi_ref'] <= feature_all_strict['fi_tar']]
     feature_all = feature_all.reset_index(drop=True)
-    feature_all_strict = feature_all_strict.reset_index(drop=True)
-    return feature_all, feature_all_strict
+    return feature_all
 
 
 # find all disconnected subnetworks in a dataset
@@ -811,16 +794,6 @@ def all_networks(iso_add_type, isotope_match, adduct_match, single=False):
     return network_list
 
 
-# merge subnetworks if their correlation between every node of the subnetworks is high and rt in the threshold
-# todo: merge two networks
-def merge_networks(network_list):
-    for i in range(len(network_list)-1):
-        for j in range(i+1, len(network_list)):
-            pass
-    return
-
-
-# todo: add mean rt diff column
 # calculate the number of connections between each pair of networks
 # return the indices of matching network in dataset 2 for each network in dataset 1
 # keep two matches in the second dataset if rt difference is less than d_rt and no overlap match
@@ -862,6 +835,7 @@ def network_connection(feature_all, nl_1, nl_2, d_rt, multi_match=True, least_ma
             else:
                 tar_n = cc2_id[np.argmin(network_mzdiff[cc2_id])]
             if any(network_c[tar_n]) in network_ref:
+                network_score[tar_n] = 0
                 continue
             network_rt.append(network_meanrt[tar_n])
             if np.abs(network_meanrt[tar_n] - network_rt[0]) <= d_rt:
@@ -874,9 +848,13 @@ def network_connection(feature_all, nl_1, nl_2, d_rt, multi_match=True, least_ma
     return network_match_df
 
 
-# todo: check network match from both directions
+# check network match from both directions
 def network_valid(network_match_1, network_match_2):
-    pass
+    network_match = pd.DataFrame(columns=network_match_1.columns)
+    for i in range(len(network_match_1.index)):
+        if (network_match_1.iloc[i, [1, 0]] == network_match_2.iloc[:10, [1, 0]]).any(axis=1).any():
+            network_match.append(network_match_1.iloc[i])
+    return network_match
 
 
 # select high probability feature matches from all feature matches using subnetwork connections
@@ -890,24 +868,24 @@ def hpfeature_match(feature_all, network_list_1, network_list_2, network_match_d
             tarind = network_match_df.index[network_match_df['tar_net'] == tarnet[0]].tolist()
             if len(refind) > 0 and len(tarind) > 0:
                 if refind[0] in tarind:
-                    feature_match.append(feature_all.iloc[i].append(network_match_df.iloc[refind[0]]))
+                    feature_match.append(feature_all.iloc[i, :8].append(network_match_df.iloc[refind[0]]))
     feature_hp_df = pd.DataFrame(feature_match, columns=['reference', 'target', 'mz_ref', 'mz_tar', 'rt_ref', 'rt_tar',
-                                                         'fi_ref', 'fi_tar', 'iso_type', 'add_type', 'ref_net', 'tar_net',
+                                                         'fi_ref', 'fi_tar', 'ref_net', 'tar_net',
                                                          'n_match', 'n_node_1', 'n_node_2', 'mean_mz_diff'])
     return feature_hp_df
 
 
 # add rt, mz and fi regression results to feature match table
-def feature_match_regression(feature_all, feature_hp):
+def feature_match_regression(feature_all, feature_hp, interp='cubic', frac_rt=0.1, frac_mz=0.1, frac_c=0.1):
     x_rt = feature_hp['rt_ref'].values
     y_rt = (feature_hp['rt_tar']-feature_hp['rt_ref']).values
     y_rt = y_rt[np.argsort(x_rt)]
     x_rt = np.sort(x_rt)
     lowess = sm.nonparametric.lowess
-    z = lowess(y_rt, x_rt, is_sorted=True, frac=0.2)
+    z = lowess(y_rt, x_rt, is_sorted=True, frac=frac_rt)
     xout_rt = z[:, 0]
     yout_rt = z[:, 1]
-    f_rt = interp1d(xout_rt, yout_rt, bounds_error=False, fill_value="extrapolate")
+    f_rt = interp1d(xout_rt, yout_rt, kind=interp, bounds_error=False, fill_value="extrapolate")
     x_rt = feature_hp['rt_ref'].values
     feature_hp['rt_reg'] = f_rt(x_rt).tolist()
     x_all_rt = feature_all['rt_ref'].values
@@ -918,25 +896,24 @@ def feature_match_regression(feature_all, feature_hp):
     y_mz = y_mz[np.argsort(x_mz)]
     x_mz = np.sort(x_mz)
     lowess = sm.nonparametric.lowess
-    z = lowess(y_mz, x_mz, is_sorted=True, frac=0.2)
+    z = lowess(y_mz, x_mz, is_sorted=True, frac=frac_mz)
     xout_mz = z[:, 0]
     yout_mz = z[:, 1]
-    f_mz = interp1d(xout_mz, yout_mz, bounds_error=False, fill_value="extrapolate")
+    f_mz = interp1d(xout_mz, yout_mz, kind=interp, bounds_error=False, fill_value="extrapolate")
     x_mz = feature_hp['mz_ref'].values
     feature_hp['mz_reg'] = f_mz(x_mz).tolist()
     x_all_mz = feature_all['mz_ref'].values
     feature_all['mz_reg'] = f_mz(x_all_mz).tolist()
 
     x_fi = np.log10(feature_hp['fi_ref'].values)
-    y_fi = np.log10(np.abs((feature_hp['fi_ref'] - feature_hp['fi_tar']).values))
+    y_fi = np.log10(feature_hp['fi_tar'].values) - np.log10(feature_hp['fi_ref'].values)
     y_fi = y_fi[np.argsort(x_fi)]
     x_fi = np.sort(x_fi)
     lowess = sm.nonparametric.lowess
-    z = lowess(y_fi, x_fi, is_sorted=True, frac=0.1)
+    z = lowess(y_fi, x_fi, is_sorted=True, frac=frac_c)
     xout_fi = z[:, 0]
     yout_fi = z[:, 1]
-    feature_hp['fi_reg'] = yout_fi.tolist()
-    f_fi = interp1d(xout_fi, yout_fi, bounds_error=False, fill_value="extrapolate")
+    f_fi = interp1d(xout_fi, yout_fi, kind=interp, bounds_error=False, fill_value="extrapolate")
     x_fi = np.log10(feature_hp['fi_ref'].values)
     feature_hp['fi_reg'] = f_fi(x_fi).tolist()
     x_all_fi = np.log10(feature_all['fi_ref'].values)
@@ -958,8 +935,8 @@ def all_match_penal(feature_all, feature_hp, mad=5, w=None, plot=True):
     y_all_rt_reg = feature_all['rt_reg'].values
     y_rt_c = y_rt - y_rt_reg
     y_all_rt_c = y_all_rt - y_all_rt_reg
-    y_rt_s = y_rt_c / (stats.median_abs_deviation(y_all_rt_c) * mad)
-    y_all_rt_s = y_all_rt_c / (stats.median_abs_deviation(y_all_rt_c) * mad)
+    y_rt_s = y_rt_c / (stats.median_abs_deviation(y_rt_c) * mad)
+    y_all_rt_s = y_all_rt_c / (stats.median_abs_deviation(y_rt_c) * mad)
 
     x_mz = feature_hp['mz_ref'].values
     y_mz = (feature_hp['mz_tar'] - feature_hp['mz_ref']).values
@@ -971,28 +948,28 @@ def all_match_penal(feature_all, feature_hp, mad=5, w=None, plot=True):
     y_all_mz_reg = feature_all['mz_reg'].values
     y_mz_c = y_mz - y_mz_reg
     y_all_mz_c = y_all_mz - y_all_mz_reg
-    y_mz_s = y_mz_c / (stats.median_abs_deviation(y_all_mz_c) * mad)
-    y_all_mz_s = y_all_mz_c / (stats.median_abs_deviation(y_all_mz_c) * mad)
+    y_mz_s = y_mz_c / (stats.median_abs_deviation(y_mz_c) * mad)
+    y_all_mz_s = y_all_mz_c / (stats.median_abs_deviation(y_mz_c) * mad)
 
-    x_fi = np.log10(np.abs(feature_hp['fi_ref'].values))
-    y_fi = np.log10(np.abs(feature_hp['fi_tar'].values - feature_hp['fi_ref'].values))
+    x_fi = np.log10(feature_hp['fi_ref'].values)
+    y_fi = np.log10(feature_hp['fi_tar'].values) - np.log10(feature_hp['fi_ref'].values)
     y_fi_reg = feature_hp['fi_reg'].values
     y_fi_reg_ = y_fi_reg[np.argsort(x_fi)]
     x_fi_ = np.sort(x_fi)
-    x_all_fi = np.log10(np.abs(feature_all['fi_ref'].values))
-    y_all_fi = np.log10(np.abs((feature_all['fi_tar'] - feature_all['fi_ref']).values))
+    x_all_fi = np.log10(feature_all['fi_ref'].values)
+    y_all_fi = np.log10(feature_all['fi_tar'].values) - np.log10(feature_all['fi_ref'].values)
     y_all_fi_reg = feature_all['fi_reg'].values
     y_fi_c = y_fi - y_fi_reg
     y_all_fi_c = y_all_fi - y_all_fi_reg
-    y_fi_s = y_fi_c / (stats.median_abs_deviation(y_all_fi_c) * mad)
-    y_all_fi_s = y_all_fi_c / (stats.median_abs_deviation(y_all_fi_c) * mad)
+    y_fi_s = y_fi_c / (stats.median_abs_deviation(y_fi_c) * mad)
+    y_all_fi_s = y_all_fi_c / (stats.median_abs_deviation(y_fi_c) * mad)
 
     penalisation = np.sqrt(w[0] * np.square(y_all_rt_s) + w[1] * np.square(y_all_mz_s) + w[2] * np.square(y_all_fi_s))
     feature_all['penalisation'] = penalisation.tolist()
 
     if plot:
         plt.style.use('seaborn-darkgrid')
-        fig, axs = plt.subplots(ncols=3, nrows=5, figsize=(7, 7))
+        fig, axs = plt.subplots(ncols=3, nrows=5, figsize=(9, 9))
 
         # step 0
         axs[0, 0].scatter(x_all_rt, y_all_rt, s=2, c='black')
@@ -1076,19 +1053,19 @@ def all_match_penal(feature_all, feature_hp, mad=5, w=None, plot=True):
         axs[4, 0].set_xlabel('RT ref', fontsize=8)
         axs[4, 0].set_ylabel('RT diff', fontsize=8)
         axs[4, 0].tick_params(labelsize=7)
-        cb = fig.colorbar(im, ax=axs[4, 0], ticks=[0, 1, 2, 3, 4])
+        cb = fig.colorbar(im, ax=axs[4, 0])
         cb.ax.tick_params(labelsize='7')
         im = axs[4, 1].scatter(x_all_mz, y_all_mz, s=2, c=penalisation, cmap='coolwarm', vmin=0)
         axs[4, 1].set_xlabel('MZ ref', fontsize=8)
         axs[4, 1].set_ylabel('MZ diff', fontsize=8)
         axs[4, 1].tick_params(labelsize=7)
-        cb = fig.colorbar(im, ax=axs[4, 1], ticks=[0, 1, 2, 3, 4])
+        cb = fig.colorbar(im, ax=axs[4, 1])
         cb.ax.tick_params(labelsize='7')
-        im = axs[4, 2].scatter(x_all_fi, y_all_fi, s=2, c=penalisation, cmap='coolwarm', vmin=0)
+        im = axs[4, 2].scatter(x_all_fi, np.log10(feature_all['fi_tar'].values), s=2, c=penalisation, cmap='coolwarm', vmin=0)
         axs[4, 2].set_xlabel('log10 FI ref', fontsize=8)
-        axs[4, 2].set_ylabel('log10 FI diff', fontsize=8)
+        axs[4, 2].set_ylabel('log10 FI tar', fontsize=8)
         axs[4, 2].tick_params(labelsize=7)
-        cb = fig.colorbar(im, ax=axs[4, 2], ticks=[0, 1, 2, 3, 4])
+        cb = fig.colorbar(im, ax=axs[4, 2])
         cb.ax.tick_params(labelsize='7')
 
         fig.tight_layout()
@@ -1113,14 +1090,10 @@ def reduce_multimatch_ps(feature_all):
     return feature_single.reset_index(drop=True)
 
 
-# use validation score to reduce multiple matches
-def reduce_multimatch_vs(feature_all):
-    pass
-
-
 # use penalisation score to reduce poor matches
 def reduce_poormatch(feature_single, mad=5):
-    feature_good = feature_single[feature_single['penalisation'] <= stats.median_abs_deviation(feature_single['penalisation']) * mad]
+    feature_good = feature_single[feature_single['penalisation'] <= (np.median(feature_single['penalisation']) +
+                                  stats.median_abs_deviation(feature_single['penalisation']) * mad)]
     return feature_good.reset_index(drop=True)
 
 
@@ -1140,15 +1113,15 @@ def plot_goodmatch(feature_all, feature_single, feature_good):
     x_g_mz = feature_good['mz_ref'].values
     y_g_mz = (feature_good['mz_tar'] - feature_good['mz_ref']).values
 
-    x_all_fi = np.log10(np.abs(feature_all['fi_ref'].values))
-    y_all_fi = np.log10(np.abs(feature_all['fi_tar'].values - feature_all['fi_ref'].values))
-    x_s_fi = np.log10(np.abs(feature_single['fi_ref'].values))
-    y_s_fi = np.log10(np.abs(feature_single['fi_tar'].values - feature_single['fi_ref'].values))
-    x_g_fi = np.log10(np.abs(feature_good['fi_ref'].values))
-    y_g_fi = np.log10(np.abs(feature_good['fi_tar'].values - feature_good['fi_ref'].values))
+    x_all_fi = np.log10(feature_all['fi_ref'].values)
+    y_all_fi = np.log10(feature_all['fi_tar'].values) - np.log10(feature_all['fi_ref'].values)
+    x_s_fi = np.log10(feature_single['fi_ref'].values)
+    y_s_fi = np.log10(feature_single['fi_tar'].values) - np.log10(feature_single['fi_ref'].values)
+    x_g_fi = np.log10(feature_good['fi_ref'].values)
+    y_g_fi = np.log10(feature_good['fi_tar'].values) - np.log10(feature_good['fi_ref'].values)
 
     plt.style.use('seaborn-darkgrid')
-    fig, axs = plt.subplots(ncols=3, nrows=1, figsize=(7, 7/5))
+    fig, axs = plt.subplots(ncols=3, nrows=1, figsize=(9, 9/5))
 
     axs[0].scatter(x_all_rt, y_all_rt, s=2, c='blue', label='multi match')
     axs[0].scatter(x_s_rt, y_s_rt, s=2, c='orange', label='poor match')
@@ -1157,14 +1130,14 @@ def plot_goodmatch(feature_all, feature_single, feature_good):
     axs[0].set_ylabel('RT diff', fontsize=8)
     axs[0].tick_params(labelsize=7)
 
-    axs[1].scatter(x_all_mz, y_all_mz, s=2, c='blue', label='other match')
+    axs[1].scatter(x_all_mz, y_all_mz, s=2, c='blue', label='multi match')
     axs[1].scatter(x_s_mz, y_s_mz, s=2, c='orange', label='poor match')
     axs[1].scatter(x_g_mz, y_g_mz, s=2, c='black', label='good match')
     axs[1].set_xlabel('MZ ref', fontsize=8)
     axs[1].set_ylabel('MZ diff', fontsize=8)
     axs[1].tick_params(labelsize=7)
 
-    axs[2].scatter(x_all_fi, y_all_fi, s=2, c='blue', label='other match')
+    axs[2].scatter(x_all_fi, y_all_fi, s=2, c='blue', label='multi match')
     axs[2].scatter(x_s_fi, y_s_fi, s=2, c='orange', label='poor match')
     axs[2].scatter(x_g_fi, y_g_fi, s=2, c='black', label='good match')
     axs[2].set_xlabel('log10 FI ref', fontsize=8)
@@ -1180,7 +1153,7 @@ def plot_goodmatch(feature_all, feature_single, feature_good):
 # evaluate good matches
 # if corr >= 1, it is the number of highly correlated features,
 # else (corr < 1), it is the correlation threshold to select features
-def fmatch_eval(var_info_1, var_info_2, data_1, data_2, feature_good, d_rt=1/60, corr=0.6):
+def fmatch_eval(var_info_1, var_info_2, data_1, data_2, feature_good, d_rt_r=0.005, d_rt_t=0.005, corr_r=0.6, corr_t=0.6):
     var_df_1 = pd.read_excel(var_info_1, engine='openpyxl')
     var_df_2 = pd.read_excel(var_info_2, engine='openpyxl')
     if data_1[-3:] == 'csv':
@@ -1207,10 +1180,10 @@ def fmatch_eval(var_info_1, var_info_2, data_1, data_2, feature_good, d_rt=1/60,
     for i in range(len(feature_good)):
         rt_ref = feature_good.iloc[i, 4]
         rt_tar = feature_good.iloc[i, 5]
-        ref_df = var_df_1[(rt_ref - d_rt <= var_df_1['rtmed']) & (var_df_1['rtmed'] <= rt_ref + d_rt)]
-        tar_df = var_df_2[(rt_tar - d_rt <= var_df_2['rtmed']) & (var_df_2['rtmed'] <= rt_tar + d_rt)]
-        ref_data = data_pd_1.T[(rt_ref - d_rt <= var_df_1['rtmed']) & (var_df_1['rtmed'] <= rt_ref + d_rt)]
-        tar_data = data_pd_2.T[(rt_tar - d_rt <= var_df_2['rtmed']) & (var_df_2['rtmed'] <= rt_tar + d_rt)]
+        ref_df = var_df_1[(rt_ref - d_rt_r <= var_df_1['rtmed']) & (var_df_1['rtmed'] <= rt_ref + d_rt_r)]
+        tar_df = var_df_2[(rt_tar - d_rt_t <= var_df_2['rtmed']) & (var_df_2['rtmed'] <= rt_tar + d_rt_t)]
+        ref_data = data_pd_1.T[(rt_ref - d_rt_r <= var_df_1['rtmed']) & (var_df_1['rtmed'] <= rt_ref + d_rt_r)]
+        tar_data = data_pd_2.T[(rt_tar - d_rt_t <= var_df_2['rtmed']) & (var_df_2['rtmed'] <= rt_tar + d_rt_t)]
         ref_i = ref_data[ref_df.MZRT_str == feature_good.iloc[i, 0]]
         tar_i = tar_data[tar_df.MZRT_str == feature_good.iloc[i, 1]]
         ref_data = ref_data[ref_df.MZRT_str != feature_good.iloc[i, 0]]
@@ -1221,18 +1194,14 @@ def fmatch_eval(var_info_1, var_info_2, data_1, data_2, feature_good, d_rt=1/60,
         tar_df = tar_df.assign(correlation=tar_data.corrwith(tar_i.iloc[0], axis=1))
         ref_df = ref_df.sort_values(by=['correlation']).reset_index(drop=True)
         tar_df = tar_df.sort_values(by=['correlation']).reset_index(drop=True)
-        if corr >= 1:
-            if len(ref_df) > corr:
-                ref_df = ref_df.iloc[:corr]
-            if len(tar_df) > corr:
-                tar_df = tar_df.iloc[:corr]
+        if corr_r >= 1:
+            if len(ref_df) > corr_r:
+                ref_df = ref_df.iloc[:corr_r]
+            if len(tar_df) > corr_t:
+                tar_df = tar_df.iloc[:corr_t]
         else:
-            ref_df = ref_df[ref_df['correlation'] >= corr].reset_index(drop=True)
-            if len(ref_df) > 20:
-                ref_df = ref_df.iloc[:20]
-            tar_df = tar_df[tar_df['correlation'] >= corr].reset_index(drop=True)
-            if len(tar_df) > 20:
-                tar_df = tar_df.iloc[:20]
+            ref_df = ref_df[ref_df['correlation'] >= corr_r].reset_index(drop=True)
+            tar_df = tar_df[tar_df['correlation'] >= corr_t].reset_index(drop=True)
         n_match = 0
         for j in range(len(ref_df)):
             if ref_df.iloc[j, 0] in feature_good['reference'].values:
@@ -1247,137 +1216,233 @@ def fmatch_eval(var_info_1, var_info_2, data_1, data_2, feature_good, d_rt=1/60,
     return feature_good
 
 
+# evaluate matches using isotope and adduct networks
+def fmatch_eval_s(feature_good, network_list_1, network_list_2):
+    match = []
+    size_1 = []
+    size_2 = []
+    for i in range(len(feature_good)):
+        ref = feature_good.iloc[i, 0]
+        tar = feature_good.iloc[i, 1]
+        ref_net = [list(s) for s in network_list_1 if ref in s]
+        tar_net = [list(s) for s in network_list_2 if tar in s]
+        n_match = 0
+        if len(ref_net) == 0 or len(tar_net) == 0:
+            match.append(0)
+            if len(ref_net) == 0 and len(tar_net) == 0:
+                size_1.append(0)
+                size_2.append(0)
+            elif len(ref_net) == 0:
+                size_1.append(0)
+                size_2.append(len(tar_net[0])-1)
+            else:
+                size_1.append(len(ref_net[0])-1)
+                size_2.append(0)
+        else:
+            ref_net = ref_net[0]
+            ref_net.remove(ref)
+            tar_net = tar_net[0]
+            tar_net.remove(tar)
+            for j in range(len(ref_net)):
+                if ref_net[j] in feature_good['reference'].values:
+                    if feature_good.iloc[feature_good.index[feature_good.iloc[:, 0] == ref_net[j]], 1].values.any() in tar_net:
+                        n_match += 1
+            match.append(n_match)
+            size_1.append(len(ref_net))
+            size_2.append(len(tar_net))
+    feature_good['match_s'] = match
+    feature_good['size_1_s'] = size_1
+    feature_good['size_2_s'] = size_2
+    return feature_good
+
+
+# feature matching evaluation using annotations
+def fmatch_eval_annotation(feature_good, var_info_2, annotation):
+    var_df_2 = pd.read_excel(var_info_2, engine='openpyxl')
+    if 'MZRT_str' not in var_df_2.columns:
+        name_mz = var_df_2['mzmed'].astype(str).str.split(".")
+        name_rt = var_df_2['rtmed'].astype(str).str.split(".")
+        var_df_2['MZRT_str'] = 'SLPOS_' + name_mz.str[0] + '.' + name_mz.str[1].str[:4] + '_' + name_rt.str[0] + '.' + name_rt.str[1].str[:4]
+    var_df_2 = var_df_2[['MZRT_str', 'VarID']]
+    annotation_df = pd.read_excel(annotation, engine='openpyxl')
+    annotation_df = annotation_df[['AIRWAVE1_MZRT_str', 'MESA_VarID']]
+    anno = []
+    for i in range(len(feature_good)):
+        ref_mzrt = feature_good.iloc[i, 0]
+        tar_mzrt = feature_good.iloc[i, 1]
+        tar_varid = var_df_2[var_df_2.iloc[:, 0]==tar_mzrt].iloc[0, 1].strip()
+        if ref_mzrt in annotation_df.iloc[:, 0].values and tar_varid in annotation_df.iloc[:, 1].values:
+            if ((annotation_df.iloc[:, 0]==ref_mzrt)&(annotation_df.iloc[:, 1]==tar_varid)).any():
+                anno.append(1)
+            else:
+                anno.append(-1)
+        else:
+            anno.append(0)
+    feature_good['anno'] = anno
+    return feature_good
+
+
+# plot to show the final matching results
+def plot_matching_results(feature_all, feature_single, feature_good, annotation, var_info_1, var_info_2):
+    var_df_1 = pd.read_excel(var_info_1, engine='openpyxl')
+    if 'MZRT_str' not in var_df_1.columns:
+        name_mz = var_df_1['mzmed'].astype(str).str.split(".")
+        name_rt = var_df_1['rtmed'].astype(str).str.split(".")
+        var_df_1['MZRT_str'] = 'SLPOS_' + name_mz.str[0] + '.' + name_mz.str[1].str[:4] + '_' + name_rt.str[0] + '.' + \
+                               name_rt.str[1].str[:4]
+    var_df_1 = var_df_1[['MZRT_str', 'mzmed', 'rtmed', 'fimed']]
+    var_df_2 = pd.read_excel(var_info_2, engine='openpyxl')
+    if 'MZRT_str' not in var_df_2.columns:
+        name_mz = var_df_2['mzmed'].astype(str).str.split(".")
+        name_rt = var_df_2['rtmed'].astype(str).str.split(".")
+        var_df_2['MZRT_str'] = 'SLPOS_' + name_mz.str[0] + '.' + name_mz.str[1].str[:4] + '_' + name_rt.str[0] + '.' + \
+                               name_rt.str[1].str[:4]
+    var_df_2 = var_df_2[['MZRT_str', 'mzmed', 'rtmed', 'fimed', 'VarID']]
+    annotation_df = pd.read_excel(annotation, engine='openpyxl')
+    annotation_df = annotation_df[['AIRWAVE1_MZRT_str', 'MESA_VarID']]
+    good_id = []
+    for i in range(len(annotation_df)):
+        if isinstance(annotation_df.iloc[i, 0], str) and isinstance(annotation_df.iloc[i, 1], str):
+            if annotation_df.iloc[i, 0] != 'n.d.' and annotation_df.iloc[i, 1] != 'n.d.':
+                mzrt_ref = annotation_df.iloc[i, 0]
+                mzrt_tar = var_df_2[var_df_2.iloc[:, 4].str.strip() == annotation_df.iloc[i, 1]].iloc[0, 0]
+                rt_ref = var_df_1[var_df_1.iloc[:, 0] == mzrt_ref].iloc[0, 2]
+                rt_tar = var_df_2[var_df_2.iloc[:, 0] == mzrt_tar].iloc[0, 2]
+                mz_ref = var_df_1[var_df_1.iloc[:, 0] == mzrt_ref].iloc[0, 1]
+                mz_tar = var_df_2[var_df_2.iloc[:, 0] == mzrt_tar].iloc[0, 1]
+                fi_ref = var_df_1[var_df_1.iloc[:, 0] == mzrt_ref].iloc[0, 3]
+                fi_tar = var_df_2[var_df_2.iloc[:, 0] == mzrt_tar].iloc[0, 3]
+                good_id.append([mzrt_ref, mzrt_tar, mz_ref, mz_tar, rt_ref, rt_tar, fi_ref, fi_tar])
+    good_id_df = pd.DataFrame(good_id, columns=['reference', 'target', 'mz_ref', 'mz_tar',
+                                                'rt_ref', 'rt_tar', 'fi_ref', 'fi_tar'])
+    feature_poor = feature_single[~(
+                feature_single.reference.isin(feature_good['reference']) & feature_single.target.isin(
+            feature_good['target']))]
+    feature_gidpm = pd.merge(good_id_df, feature_poor.iloc[:, :2], how='inner', on=['reference', 'target'])
+    feature_ot = good_id_df[
+        ~(good_id_df.reference.isin(feature_all['reference']) & good_id_df.target.isin(feature_all['target']))]
+    feature_wrong = feature_good[feature_good['anno'] == -1]
+
+    x_all_rt = feature_all['rt_ref'].values
+    y_all_rt = (feature_all['rt_tar'] - feature_all['rt_ref']).values
+    x_gid_rt = good_id_df['rt_ref'].values
+    y_gid_rt = (good_id_df['rt_tar'] - good_id_df['rt_ref']).values
+    x_gidpm_rt = feature_gidpm['rt_ref'].values
+    y_gidpm_rt = (feature_gidpm['rt_tar'] - feature_gidpm['rt_ref']).values
+    x_ot_rt = feature_ot['rt_ref'].values
+    y_ot_rt = (feature_ot['rt_tar'] - feature_ot['rt_ref']).values
+    x_wm_rt = feature_wrong['rt_ref'].values
+    y_wm_rt = (feature_wrong['rt_tar'] - feature_wrong['rt_ref']).values
+
+    x_all_mz = feature_all['mz_ref'].values
+    y_all_mz = (feature_all['mz_tar'] - feature_all['mz_ref']).values
+    x_gid_mz = good_id_df['mz_ref'].values
+    y_gid_mz = (good_id_df['mz_tar'] - good_id_df['mz_ref']).values
+    x_gidpm_mz = feature_gidpm['mz_ref'].values
+    y_gidpm_mz = (feature_gidpm['mz_tar'] - feature_gidpm['mz_ref']).values
+    x_ot_mz = feature_ot['mz_ref'].values
+    y_ot_mz = (feature_ot['mz_tar'] - feature_ot['mz_ref']).values
+    x_wm_mz = feature_wrong['mz_ref'].values
+    y_wm_mz = (feature_wrong['mz_tar'] - feature_wrong['mz_ref']).values
+
+    x_all_fi = np.log10(feature_all['fi_ref'].values)
+    y_all_fi = np.log10(feature_all['fi_tar'].values) - np.log10(feature_all['fi_ref'].values)
+    x_gid_fi = np.log10(good_id_df['fi_ref'].values)
+    y_gid_fi = np.log10(good_id_df['fi_tar'].values) - np.log10(good_id_df['fi_ref'].values)
+    x_gidpm_fi = np.log10(feature_gidpm['fi_ref'].values)
+    y_gidpm_fi = np.log10(feature_gidpm['fi_tar'].values) - np.log10(feature_gidpm['fi_ref'].values)
+    x_ot_fi = np.log10(feature_ot['fi_ref'].values)
+    y_ot_fi = np.log10(feature_ot['fi_tar'].values) - np.log10(feature_ot['fi_ref'].values)
+    x_wm_fi = np.log10(feature_wrong['fi_ref'].values)
+    y_wm_fi = np.log10(feature_wrong['fi_tar'].values) - np.log10(feature_wrong['fi_ref'].values)
+
+    plt.style.use('seaborn-darkgrid')
+    fig, axs = plt.subplots(ncols=3, nrows=1, figsize=(9, 6))
+
+    axs[0].scatter(x_all_rt, y_all_rt, s=1, c='black', label='all match')
+    axs[0].scatter(x_gid_rt, y_gid_rt, s=5, c='blue', label='goodID')
+    axs[0].scatter(x_gidpm_rt, y_gidpm_rt, s=30, facecolors='none', edgecolors='r', label='goodID poorM')
+    axs[0].scatter(x_ot_rt, y_ot_rt, s=50, c='red', marker='+', label='outside thresh')
+    axs[0].scatter(x_wm_rt, y_wm_rt, s=30, c='red', marker='x', label='wrong match')
+    axs[0].set_xlabel('RT ref', fontsize=8)
+    axs[0].set_ylabel('RT diff', fontsize=8)
+    axs[0].tick_params(labelsize=7)
+
+    axs[1].scatter(x_all_mz, y_all_mz, s=1, c='black', label='all match')
+    axs[1].scatter(x_gid_mz, y_gid_mz, s=5, c='blue', label='goodID')
+    axs[1].scatter(x_gidpm_mz, y_gidpm_mz, s=30, facecolors='none', edgecolors='r', label='goodID poorM')
+    axs[1].scatter(x_ot_mz, y_ot_mz, s=50, c='red', marker='+', label='outside thresh')
+    axs[1].scatter(x_wm_mz, y_wm_mz, s=30, c='red', marker='x', label='wrong match')
+    axs[1].set_xlabel('MZ ref', fontsize=8)
+    axs[1].set_ylabel('MZ diff', fontsize=8)
+    axs[1].tick_params(labelsize=7)
+
+    axs[2].scatter(x_all_fi, y_all_fi, s=1, c='black', label='all match')
+    axs[2].scatter(x_gid_fi, y_gid_fi, s=5, c='blue', label='goodID')
+    axs[2].scatter(x_gidpm_fi, y_gidpm_fi, s=30, facecolors='none', edgecolors='r', label='goodID poorM')
+    axs[2].scatter(x_ot_fi, y_ot_fi, s=50, c='red', marker='+', label='outside thresh')
+    axs[2].scatter(x_wm_fi, y_wm_fi, s=30, c='red', marker='x', label='wrong match')
+    axs[2].set_xlabel('log10 FI ref', fontsize=8)
+    axs[2].set_ylabel('log10 FI diff', fontsize=8)
+    axs[2].tick_params(labelsize=7)
+
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    fig.tight_layout()
+    fig.show()
+    plt.savefig('matching_results.png', dpi=200)
+    plt.close()
+
+    return good_id_df, feature_gidpm, feature_ot, feature_wrong
+
+
 # plot evaluation
-# todo
-def plot_eval(feature_good):
+def plot_eval(feature_good, supervised=12):
     plt.style.use('seaborn-whitegrid')
 
-    # reftar plot coloured by number of common features
-    plt.scatter(feature_good.iloc[:, -2] + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
-                feature_good.iloc[:, -1] + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
-                c=feature_good.iloc[:, -3], cmap='coolwarm', alpha=0.8, s=10)
-    plt.colorbar()
-    plt.xticks(np.arange(0, feature_good.iloc[:, -2].max()+1, 5))
-    plt.yticks(np.arange(0, feature_good.iloc[:, -1].max()+1, 5))
-    plt.xlabel('number of highly correlated features in reference')
-    plt.ylabel('number of highly correlated features in target')
-    plt.title('evaluation coloured by number of common features')
-    plt.savefig('eval_common.png', dpi=200)
-    plt.close()
-
-    # reftar plot coloured by penalisation score
-    plt.scatter(feature_good.iloc[:, -2] + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
-                feature_good.iloc[:, -1] + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
-                c=feature_good.iloc[:, -4], cmap='coolwarm', alpha=0.8, s=10)
-    plt.colorbar()
-    plt.xticks(np.arange(0, feature_good.iloc[:, -2].max()+1, 5))
-    plt.yticks(np.arange(0, feature_good.iloc[:, -1].max()+1, 5))
-    plt.xlabel('number of highly correlated features in reference')
-    plt.ylabel('number of highly correlated features in target')
-    plt.title('evaluation coloured by MZRT penalisation score')
-    plt.savefig('eval_ps.png', dpi=200)
-    plt.close()
-
-    # reftar plot coloured by caden score
+    # penalisation common plot coloured by CMR score
     C = []
     for i in range(len(feature_good)):
-        C.append((np.log(feature_good.iloc[i, -3] + 1) + 1) / (
-                    np.log(max(feature_good.iloc[i, -1], feature_good.iloc[i, -2]) + 1) + 1))
-    plt.scatter(feature_good.iloc[:, -2] + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
-                feature_good.iloc[:, -1] + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
+        C.append((feature_good.iloc[i, 12]) / (
+                min(feature_good.iloc[i, 13], feature_good.iloc[i, 14]) + 1))
+    plt.scatter(feature_good.iloc[:, 11],
+                feature_good.iloc[:, supervised] + 0.8 * np.random.rand(len(feature_good)),
                 c=C, cmap='coolwarm', alpha=0.8, s=10)
-    plt.colorbar()
-    plt.xticks(np.arange(0, feature_good.iloc[:, -2].max()+1, 5))
-    plt.yticks(np.arange(0, feature_good.iloc[:, -1].max()+1, 5))
-    plt.xlabel('number of highly correlated features in reference')
-    plt.ylabel('number of highly correlated features in target')
-    plt.title('evaluation coloured by caden score')
-    plt.savefig('eval_cs.png', dpi=200)
-    plt.close()
-
-    # min plot coloured by penalisation score
-    m = []
-    for i in range(len(feature_good)):
-        m.append(min(feature_good.iloc[i, -1], feature_good.iloc[i, -2]))
-    plt.scatter(feature_good.iloc[:, -3] + np.random.rand(len(feature_good)),
-                m + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
-                c=feature_good.iloc[:, -4], cmap='coolwarm', alpha=0.8, s=10)
-    plt.colorbar()
-    plt.xticks(np.arange(0, feature_good.iloc[:, -2:].max().max()+1, 5))
-    plt.yticks(np.arange(0, feature_good.iloc[:, -2:].max().max()+1, 5))
-    plt.xlabel('number of common features')
-    plt.ylabel('minimum number of features')
-    plt.title('evaluation coloured by MZRT penalisation score')
-    plt.savefig('eval_min_ps.png', dpi=200)
-    plt.close()
-
-    # min plot coloured by caden score
-    m = []
-    C = []
-    for i in range(len(feature_good)):
-        m.append(min(feature_good.iloc[i, -1], feature_good.iloc[i, -2]))
-        C.append((np.log(feature_good.iloc[i, -3] + 1) + 1) / (
-                np.log(max(feature_good.iloc[i, -1], feature_good.iloc[i, -2]) + 1) + 1))
-    plt.scatter(feature_good.iloc[:, -3] + np.random.rand(len(feature_good)),
-                m + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
-                c=C, cmap='coolwarm', alpha=0.8, s=10)
-    plt.colorbar()
-    plt.xticks(np.arange(0, feature_good.iloc[:, -2:].max().max() + 1, 5))
-    plt.yticks(np.arange(0, feature_good.iloc[:, -2:].max().max() + 1, 5))
-    plt.xlabel('number of common features')
-    plt.ylabel('minimum number of features')
-    plt.title('evaluation coloured by caden score')
-    plt.savefig('eval_min_cs.png', dpi=200)
-    plt.close()
-
-    # max plot coloured by penalisation score
-    m = []
-    for i in range(len(feature_good)):
-        m.append(max(feature_good.iloc[i, -1], feature_good.iloc[i, -2]))
-    plt.scatter(feature_good.iloc[:, -3] + np.random.rand(len(feature_good)),
-                m + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
-                c=feature_good.iloc[:, -4], cmap='coolwarm', alpha=0.8, s=10)
-    plt.colorbar()
-    plt.xticks(np.arange(0, feature_good.iloc[:, -2:].max().max() + 1, 5))
-    plt.yticks(np.arange(0, feature_good.iloc[:, -2:].max().max() + 1, 5))
-    plt.xlabel('number of common features')
-    plt.ylabel('maximum number of features')
-    plt.title('evaluation coloured by MZRT penalisation score')
-    plt.savefig('eval_max_ps.png', dpi=200)
-    plt.close()
-
-    # max plot coloured by Caden score
-    m = []
-    C = []
-    for i in range(len(feature_good)):
-        m.append(max(feature_good.iloc[i, -1], feature_good.iloc[i, -2]))
-        C.append((np.log(feature_good.iloc[i, -3] + 1) + 1) / (
-                    np.log(max(feature_good.iloc[i, -1], feature_good.iloc[i, -2]) + 1) + 1))
-    plt.scatter(feature_good.iloc[:, -3] + np.random.rand(len(feature_good)),
-                m + 0.5 * np.random.normal(scale=0.5, size=len(feature_good)),
-                c=C, cmap='coolwarm', alpha=0.8, s=10)
-    plt.colorbar()
-    plt.xticks(np.arange(0, feature_good.iloc[:, -2:].max().max()+1, 5))
-    plt.yticks(np.arange(0, feature_good.iloc[:, -2:].max().max()+1, 5))
-    plt.xlabel('number of common features')
-    plt.ylabel('maximum number of features')
-    plt.title('evaluation coloured by caden score')
-    plt.savefig('eval_max_cs.png', dpi=200)
-    plt.close()
-
-    # score plot coloured by number of common features
-    C = []
-    for i in range(len(feature_good)):
-        c = (np.log(feature_good.iloc[i, -3] + 1) + 1) / (
-                np.log(min(feature_good.iloc[i, -1], feature_good.iloc[i, -2]) + 1) + 1)
-        if c == 1:
-            c += np.random.rand(1) * 0.02
-        C.append(c)
-    plt.scatter(feature_good.iloc[:, -4], C, c=feature_good.iloc[:, -3], cmap='coolwarm', alpha=0.8, s=1)
     plt.colorbar()
     plt.xlabel('MZRT penalisation score')
-    plt.ylabel('caden score')
-    plt.title('evaluation coloured by number of common features')
-    plt.savefig('pc_min.png')
+    plt.ylabel('number of common same metabolite features')
+    plt.title('evaluation coloured by CMR score')
+    plt.savefig('matching_evaluation_1.png', dpi=200)
     plt.close()
-    
+
+    # ref tar plot coloured by CMR score
+    C = []
+    for i in range(len(feature_good)):
+        C.append((feature_good.iloc[i, 12]) / (
+                min(feature_good.iloc[i, 13], feature_good.iloc[i, 14]) + 1))
+    plt.scatter(feature_good.iloc[:, supervised + 1] + 0.8 * np.random.rand(len(feature_good)),
+                feature_good.iloc[:, supervised + 2] + 0.8 * np.random.rand(len(feature_good)),
+                c=C, cmap='coolwarm', alpha=0.8, s=10)
+    plt.colorbar()
+    plt.xlabel('number of highly correlated features in reference')
+    plt.ylabel('number of highly correlated features in target')
+    plt.title('evaluation coloured by CMR score')
+    plt.savefig('matching_evaluation_2.png', dpi=200)
+    plt.close()
+
+    # min common plot coloured by CMR score
+    m = []
+    C = []
+    for i in range(len(feature_good)):
+        m.append(min(feature_good.iloc[i, supervised + 1], feature_good.iloc[i, +2]))
+        C.append((feature_good.iloc[i, 12]) / (
+                min(feature_good.iloc[i, 13], feature_good.iloc[i, 14]) + 1))
+    plt.scatter(m + 0.8 * np.random.rand(len(feature_good)),
+                feature_good.iloc[:, supervised] + 0.8 * np.random.rand(len(feature_good)),
+                c=C, cmap='coolwarm', alpha=0.8, s=10)
+    plt.plot([0, 8], [0, 8], 'black')
+    plt.colorbar()
+    plt.xlabel('minimum number of same metabolite features')
+    plt.ylabel('number of common same metabolite features')
+    plt.title('evaluation coloured by CMR score')
+    plt.savefig('matching_evaluation_3.png', dpi=200)
+    plt.close()
