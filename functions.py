@@ -664,6 +664,24 @@ def carbonchain_match(var_info, data, iso_add_type, d_mz, d_rt, d_corr=-1, chain
     return c2h4_all, c2h4_all_strict
 
 
+def carbonchain_match_pm(feature_df, d_mz, d_rt, chain=28.031300128):
+    c2h4_list = []
+    for m in range(len(feature_df)-1):
+        mz_r = feature_df.iloc[m, 2]
+        mz_min = mz_r + chain - d_mz
+        mz_max = mz_r + chain + d_mz
+        rt_r = feature_df.iloc[m, 4]
+        for n in range(m+1, len(feature_df)):
+            mz_t = feature_df.iloc[n, 2]
+            rt_t = feature_df.iloc[n, 4]
+            if mz_min <= mz_t <= mz_max:
+                if rt_r <= rt_t <= rt_r + d_rt:
+                    c2h4_list.append([feature_df.iloc[m, 0], feature_df.iloc[n, 0], feature_df.iloc[m, 2],
+                                      feature_df.iloc[n, 2], feature_df.iloc[m, 4], feature_df.iloc[n, 4]])
+    c2h4_all = pd.DataFrame(c2h4_list, columns=['reference', 'target', 'mz_ref', 'mz_tar', 'rt_ref', 'rt_tar'])
+    return c2h4_all
+
+
 # delete the false positive c2h4 matches and plot c2h4 matches
 def carbonchain_tp(c2h4_all, model='lowess', frac=0.1, mad=3, plot=True, title='ref'):
     x = c2h4_all['rt_ref'].values
