@@ -80,11 +80,9 @@ def iso_classify(iso_df, w=1.003055):
         cc = []
         for j in cc_list[i]:
             mzrt = iso_df[['mz_ref', 'rt_ref']][iso_df['reference'] == j]
-            if not mzrt.empty:
-                cc.append([j, mzrt.iloc[0, 0], mzrt.iloc[0, 1]])
-            else:
+            if mzrt.empty:
                 mzrt = iso_df[['mz_tar', 'rt_tar']][iso_df['target'] == j]
-                cc.append([j, mzrt.iloc[0, 0], mzrt.iloc[0, 1]])
+            cc.append([j, mzrt.iloc[0, 0], mzrt.iloc[0, 1]])
         cc.sort(key=lambda x: x[1])
         cc[0].append(0)
         for m in range(1, len(cc)):
@@ -97,37 +95,37 @@ def iso_classify(iso_df, w=1.003055):
                 iso_match = []
                 for b in range(len(cc_k_2.index)):
                     if np.sum(np.logical_and(iso_df['reference'] == cc_k_1.iloc[a, 0], iso_df['target'] == cc_k_2.iloc[b, 0])) >= 1:
-                        iso_match.append([cc_k_1.iloc[a, 0], cc_k_2.iloc[b, 0], cc_k_1.iloc[a, 1], np.abs(cc_k_1.iloc[a, 1]-cc_k_2.iloc[b, 1]-w), cc_k_1.iloc[a, 2], cc_k_1.iloc[a, 3]])
+                        iso_match.append([cc_k_1.iloc[a, 0], cc_k_2.iloc[b, 0], cc_k_1.iloc[a, 1], np.abs(cc_k_1.iloc[a, 1]-cc_k_2.iloc[b, 1]-w), cc_k_1.iloc[a, 2], cc_k_1.iloc[a, 3], cc_k_2.iloc[b, 1], cc_k_2.iloc[b, 2]])
                 if len(iso_match) == 0:
                     continue
                 if len(iso_match) > 1:
                     iso_match.sort(key=lambda x: x[3])
                     for n in range(1, len(iso_match)):
-                        iso_class.append([iso_match[n][0], iso_match[n][1], iso_match[n][2], iso_match[n][4], 0, -1])
+                        iso_class.append([iso_match[n][0], iso_match[n][1], iso_match[n][2], iso_match[n][4], 0, -1, iso_match[n][6], iso_match[n][7]])
                     iso_match = [iso_match[0]]
                 tars_match = iso_df[['reference', 'mz_ref', 'mz_tar']][iso_df['target'] == iso_match[0][1]]
                 tars_match['mz_diff'] = np.abs(tars_match['mz_tar'] - tars_match['mz_ref'] - w)
                 tars_match = tars_match.sort_values(by=['mz_diff']).reset_index(drop=True)
                 if tars_match.iloc[0, 0] != iso_match[0][0]:
-                    iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[0][4], 0, -1])
+                    iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[0][4], 0, -1, iso_match[0][6], iso_match[0][7]])
                     continue
                 if len(iso_class) >= 1:
                     tars = list(list(zip(*iso_class))[1])
                 else:
                     fi_r = iso_df['fi_tar'][iso_df['reference'] == iso_match[0][0]].iloc[0] / iso_df['fi_ref'][iso_df['reference'] == iso_match[0][0]].iloc[0]
-                    iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[0][4], fi_r, 0])
+                    iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[0][4], fi_r, 0, iso_match[0][6], iso_match[0][7]])
                     continue
                 if iso_match[0][0] in tars:
                     pre_type = iso_class[tars.index(iso_match[0][0])][5]
                     if pre_type != -1:
                         fi_r = iso_df['fi_tar'][iso_df['reference'] == iso_match[0][0]].iloc[0]/iso_df['fi_ref'][iso_df['reference'] == iso_match[0][0]].iloc[0]
-                        iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[0][4], fi_r, pre_type+1])
+                        iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[0][4], fi_r, pre_type+1, iso_match[0][6], iso_match[0][7]])
                     else:
-                        iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[0][4], 0, 0])
+                        iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[0][4], 0, 0, iso_match[0][6], iso_match[0][7]])
                 else:
                     fi_r = iso_df['fi_tar'][iso_df['reference'] == iso_match[0][0]].iloc[0]/iso_df['fi_ref'][iso_df['reference'] == iso_match[0][0]].iloc[0]
-                    iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[0][4], fi_r, 0])
-    iso_type = pd.DataFrame(iso_class, columns=['reference', 'target', 'mz_ref', 'rt_ref', 'fi_ratio', 'iso_type'])
+                    iso_class.append([iso_match[0][0], iso_match[0][1], iso_match[0][2], iso_match[0][4], fi_r, 0, iso_match[0][6], iso_match[0][7]])
+    iso_type = pd.DataFrame(iso_class, columns=['reference', 'target', 'mz_ref', 'rt_ref', 'fi_ratio', 'iso_type', 'mz_tar', 'rt_tar'])
     return iso_type
 
 
