@@ -174,21 +174,6 @@ def fit_svm(iso_type):
     return gradients
 
 
-# calculate the number of incorrect labels with robust linear model or support vector machine
-def count_incorrect(iso_type, model='rlm'):
-    num_incorrect = 0
-    if model == 'rlm':
-        iso_type_new = reassign_label(iso_type, model='rlm')
-
-    elif model == 'svm':
-        iso_type_new = reassign_label(iso_type, model='svm')
-    else:
-        raise Exception("model name: 'rlm' or 'svm'")
-    num_incorrect = sum(iso_type.iloc[:, 5] != iso_type_new.iloc[:, 5])
-    num_incorrect += len(iso_type[iso_type['iso_type'] == -1])
-    return num_incorrect
-
-
 # reassign class labels with robust linear model or support vector machine
 def reassign_label(isotope_sub, model='rlm'):
     iso_type = iso_classify(isotope_sub)
