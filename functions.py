@@ -192,6 +192,7 @@ def count_incorrect(iso_type, model='rlm'):
 # reassign class labels with robust linear model or support vector machine
 def reassign_label(isotope_sub, model='rlm'):
     iso_type = iso_classify(isotope_sub)
+    num_incorrect = 0
     if model == 'rlm':
         gradients = fit_rlm(iso_type)
         std = std_class(iso_type)
@@ -206,6 +207,7 @@ def reassign_label(isotope_sub, model='rlm'):
                 dis = [a / b for a, b in zip(dis, std)]
                 if dis.index(min(dis)) != label:
                     iso_type.iloc[i, 5] = dis.index(min(dis))
+                    num_incorrect += 1
         else:
             dis = []
             x = iso_type.iloc[2]
@@ -216,6 +218,7 @@ def reassign_label(isotope_sub, model='rlm'):
             dis = [a / b for a, b in zip(dis, std)]
             if dis.index(min(dis)) != label:
                 iso_type.iloc[5] = dis.index(min(dis))
+                num_incorrect += 1
     elif model == 'svm':
         gradients = fit_svm(iso_type)
         gradients.append(0)
@@ -225,16 +228,18 @@ def reassign_label(isotope_sub, model='rlm'):
                 for j in range(len(gradients)):
                     if g > gradients[j]:
                         iso_type.iloc[i, 5] = j
+                        num_incorrect += 1
                         break
         else:
             g = iso_type.iloc[4] / iso_type.iloc[2]
             for j in range(len(gradients)):
                 if g > gradients[j]:
                     iso_type.iloc[5] = j
+                    num_incorrect += 1
                     break
     else:
         raise Exception("model name: 'rlm' or 'svm'")
-    return iso_type
+    return iso_type, num_incorrect
 
 
 # calculate the incorrect number and total number of isotopic matches with different thresholds
@@ -253,10 +258,8 @@ def iso_grid_pre(var_info, isotope_all, d_mz_list, d_rt_list, d_corr_list, model
                 index_corr = isotope_all['correlation'].ge(d_corr_list[k])
                 index = index_mz & index_rt & index_corr
                 isotope_sublist = isotope_all[index].reset_index(drop=True)
-                iso_type = iso_classify(isotope_sublist)
-                iso_reassign = reassign_label(isotope_sublist, model=model)
+                iso_reassign, incorrect_count[i, j, k] = reassign_label(isotope_sublist, model=model)
                 total_count[i, j, k] = len(isotope_sublist)
-                incorrect_count[i, j, k] = count_incorrect(iso_type, model)
                 if reassign_err:
                     var = file.loc[:, ['MZRT_str', 'mzmed', 'rtmed', 'fimed']].copy(deep=True)
                     var = var.sort_values(by=['mzmed'], ignore_index=True)
@@ -344,7 +347,7 @@ def best_threshold(isotope_all, incorrect_count, total_count, d_mz_list, d_rt_li
     index = index_mz & index_rt & index_corr
     isotope_sublist = isotope_all[index].reset_index(drop=True)
     iso_type = iso_classify(isotope_sublist)
-    iso_reassign = reassign_label(isotope_sublist, model='rlm')
+    iso_reassign, _ = reassign_label(isotope_sublist, model='rlm')
     return settings, iso_type, iso_reassign
 
 
@@ -361,7 +364,7 @@ def best_threshold_1(isotope_all, incorrect_count, total_count, d_rt_list, d_mz_
     index = index_mz & index_rt & index_corr
     isotope_sublist = isotope_all[index].reset_index(drop=True)
     iso_type = iso_classify(isotope_sublist)
-    iso_reassign = reassign_label(isotope_sublist, model='rlm')
+    iso_reassign, _ = reassign_label(isotope_sublist, model='rlm')
     if plot == 'wolabel' or plot == 'wlabel':
         plt.style.use('seaborn-darkgrid')
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
