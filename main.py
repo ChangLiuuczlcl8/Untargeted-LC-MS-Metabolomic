@@ -130,7 +130,7 @@ plot_datasets(var_info_1, var_info_2)
 feature_all_12 = allfeature_match(iso_add_type_1, iso_add_type_2, d_mz=0.015, d_rt_l=0.1, d_rt_r=0.1)
 
 # obtain feature matches for the other direction
-feature_all_21 = feature_all_12[['target', 'reference', 'mz_tar', 'mz_ref', 'rt_tar', 'rt_ref', 'fi_tar', 'fi_ref', 'iso_type', 'add_type']]
+feature_all_21 = feature_all_12[['target', 'reference', 'mz_tar', 'mz_ref', 'rt_tar', 'rt_ref', 'fi_tar', 'fi_ref']]
 feature_all_21.columns = feature_all_12.columns
 
 # find disconnected subnetworks in a dataset
@@ -184,14 +184,33 @@ feature_single_12.to_excel('feature_single_am.xlsx')
 # delete poor matches
 # input: single possible feature matches
 # output: good feature matches
-feature_good_12 = reduce_poormatch(feature_single_12, mad=5)
+feature_good_12 = reduce_poormatch(feature_single_12, mad=3)
 
 # plot good, poor and multiple match
 plot_goodmatch(feature_all_12, feature_single_12, feature_good_12)
 
 # validate each match by calculating a score
+# validate each match by calculating a score
+feature_all_12 = fmatch_eval(var_info_1, var_info_2, data_1, data_2, feature_all_12, d_rt_r=settings_1[1], d_rt_t=settings_2[1], corr_r=settings_1[2], corr_t=settings_2[2])
+feature_all_12 = fmatch_eval_s(feature_all_12, network_list_1, network_list_2)
+feature_all_12 = fmatch_eval_annotation(feature_all_12, var_info_2, annotation)
+feature_all_12.to_excel('feature_all_am.xlsx')
+
+feature_single_12 = fmatch_eval(var_info_1, var_info_2, data_1, data_2, feature_single_12, d_rt_r=settings_1[1], d_rt_t=settings_2[1], corr_r=settings_1[2], corr_t=settings_2[2])
+feature_single_12 = fmatch_eval_s(feature_single_12, network_list_1, network_list_2)
+feature_single_12 = fmatch_eval_annotation(feature_single_12, var_info_2, annotation)
+feature_single_12.to_excel('feature_single_am.xlsx')
+
 feature_good_12 = fmatch_eval(var_info_1, var_info_2, data_1, data_2, feature_good_12, d_rt_r=settings_1[1], d_rt_t=settings_2[1], corr_r=settings_1[2], corr_t=settings_2[2])
+feature_good_12 = fmatch_eval_s(feature_good_12, network_list_1, network_list_2)
+feature_good_12 = fmatch_eval_annotation(feature_good_12, var_info_2, annotation)
 feature_good_12.to_excel('feature_good_am.xlsx')
+
+good_id_df, feature_gidpm, feature_ot, feature_wrong = plot_matching_results(feature_all_12, feature_single_12, feature_good_12, annotation, var_info_1, var_info_2)
+good_id_df.to_excel('good_id_df.xlsx')
+feature_gidpm.to_excel('feature_gidpm.xlsx')
+feature_ot.to_excel('feature_ot.xlsx')
+feature_wrong.to_excel('feature_wrong.xlsx')
 
 # plot evaluation
 plot_eval(feature_good_12)
